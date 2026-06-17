@@ -1,0 +1,27 @@
+services:
+  builder:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./src/scene_recon:/app/src/scene_recon
+      - ${DATA_ROOT}:/data
+      - ${AWS_CREDENTIALS_MOUNT:-./.aws-empty}:/app/.aws:ro
+    environment:
+      HOME: /app
+      AWS_REGION: ${AWS_REGION:-eu-north-1}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_SHARED_CREDENTIALS_FILE: /app/.aws/credentials
+      AWS_CONFIG_FILE: /app/.aws/config
+      DATA_ROOT: /data
+      PYTHONPATH: /app/src
+    working_dir: /app
+
+  odm:
+    image: opendronemap/odm:3.5.1
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    gpus: all
+    volumes:
+      - ${DATA_ROOT}:/data
+    environment:
+      HOME: /tmp
+      TMPDIR: /tmp

@@ -1,0 +1,48 @@
+# Environment and secrets
+.env
+.env.local
+*.key
+*.pem
+secrets/
+credentials/
+
+# Caches and build artifacts
+.cache/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments and package management
+.venv/
+venv/
+env/
+ENV/
+uv.lock
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Data and AWS
+.aws
+.aws-empty/*
+!.aws-empty/.gitkeep
+data/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Project specific
+odm-results/
+*.log

@@ -1,0 +1,29 @@
+[project]
+name = "scene-reconstruction"
+version = "0.2.0"
+description = "Avatar record → ODM dataset builder"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.8",
+    "pandas>=2.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+scene-recon = "scene_recon.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src/scene_recon"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/scene_recon" = "scene_recon"
