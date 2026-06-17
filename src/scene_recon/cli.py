@@ -4,9 +4,17 @@ import json
 from pathlib import Path
 
 import click
+import pandas as pd
 
 from scene_recon.build import build_record
-from scene_recon.frame_select import DEFAULT_SELECTION_PARAMS, SelectionParams, select_keyframes
+from scene_recon.selection import (
+    DEFAULT_SELECTION_PARAMS,
+    SelectionParams,
+    compute_view_counts,
+    coverage_metrics,
+    params_from_constants,
+    select_keyframes,
+)
 from scene_recon.paths import resolve_run, slug_dir
 from scene_recon.record import Record
 from scene_recon.scoring_cache import load_scored_candidates
@@ -44,21 +52,6 @@ def _data_root_from_env(data_root: Path | None) -> Path | None:
     return None
 
 
-def _params_from_constants(constants: dict) -> SelectionParams:
-    defaults = DEFAULT_SELECTION_PARAMS
-    return SelectionParams(
-        bin_size_m=constants.get("bin_size_m", defaults.bin_size_m),
-        min_altitude_m=constants.get("min_altitude_m", defaults.min_altitude_m),
-        min_translation_m=constants.get("min_translation_m", defaults.min_translation_m),
-        min_rotation_deg=constants.get("min_rotation_deg", defaults.min_rotation_deg),
-        max_frame_gap=constants.get("max_frame_gap", defaults.max_frame_gap),
-        cluster_radius_m=constants.get("cluster_radius_m", defaults.cluster_radius_m),
-        max_per_cluster=constants.get("max_per_cluster", defaults.max_per_cluster),
-        coverage_warn_m=constants.get("coverage_warn_m", defaults.coverage_warn_m),
-        max_keyframes=constants.get("max_keyframes", defaults.max_keyframes),
-    )
-
-
 def _selection_params_from_cli(
     bin_size_m: float | None,
     min_translation_m: float | None,
@@ -66,6 +59,10 @@ def _selection_params_from_cli(
     max_frame_gap: int | None,
     max_per_cluster: int | None,
     max_keyframes: int | None,
+    target_views_per_cell: int | None,
+    min_pct_cells_at_target: float | None,
+    max_motion_gap_m: float | None,
+    cluster_radius_m: float | None,
 ) -> SelectionParams:
     defaults = DEFAULT_SELECTION_PARAMS
     return SelectionParams(
@@ -77,6 +74,18 @@ def _selection_params_from_cli(
         max_frame_gap=max_frame_gap if max_frame_gap is not None else defaults.max_frame_gap,
         max_per_cluster=max_per_cluster if max_per_cluster is not None else defaults.max_per_cluster,
         max_keyframes=max_keyframes if max_keyframes is not None else defaults.max_keyframes,
+        target_views_per_cell=(
+            target_views_per_cell
+            if target_views_per_cell is not None
+            else defaults.target_views_per_cell
+        ),
+        min_pct_cells_at_target=(
+            min_pct_cells_at_target
+            if min_pct_cells_at_target is not None
+            else defaults.min_pct_cells_at_target
+        ),
+        max_motion_gap_m=max_motion_gap_m if max_motion_gap_m is not None else defaults.max_motion_gap_m,
+        cluster_radius_m=cluster_radius_m if cluster_radius_m is not None else defaults.cluster_radius_m,
     )
 
 
@@ -95,6 +104,21 @@ def _selection_options(f):
         "--max-per-cluster", type=int, default=None, help="Max selected frames per spatial cluster"
     )(f)
     f = click.option("--max-keyframes", type=int, default=None, help="Cap on selected frames")(f)
+    f = click.option(
+        "--target-views-per-cell", type=int, default=None, help="Views per ground cell target"
+    )(f)
+    f = click.option(
+        "--min-pct-cells-at-target",
+        type=float,
+        default=None,
+        help="Min fraction of covered cells at target views (0.0–1.0)",
+    )(f)
+    f = click.option(
+        "--max-motion-gap-m", type=float, default=None, help="Max motion gap between selected frames"
+    )(f)
+    f = click.option(
+        "--cluster-radius-m", type=float, default=None, help="Spatial cluster radius in meters"
+    )(f)
     return f
 
 
@@ -120,6 +144,10 @@ def build_cmd(
     max_frame_gap: int | None,
     max_per_cluster: int | None,
     max_keyframes: int | None,
+    target_views_per_cell: int | None,
+    min_pct_cells_at_target: float | None,
+    max_motion_gap_m: float | None,
+    cluster_radius_m: float | None,
 ) -> None:
     """Score (if needed), select keyframes, and export ODM input."""
     from scene_recon.selection_health import SelectionFailed
@@ -133,6 +161,10 @@ def build_cmd(
         max_frame_gap,
         max_per_cluster,
         max_keyframes,
+        target_views_per_cell,
+        min_pct_cells_at_target,
+        max_motion_gap_m,
+        cluster_radius_m,
     )
     try:
         run_path = build_record(
@@ -200,8 +232,18 @@ def prepare_odm_cmd(record_path: str, run_ts: str | None, data_root: Path | None
 @click.argument("record_path")
 @click.option("--run", "run_ts", default=None, help="Run timestamp YYYYMMDDHHMMSS")
 @click.option("--data-root", type=click.Path(path_type=Path), default=None)
-def report_cmd(record_path: str, run_ts: str | None, data_root: Path | None) -> None:
-    """Regenerate selection report for a run (re-selects using build.json params)."""
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Re-run select_keyframes from scored cache instead of using saved audit",
+)
+def report_cmd(
+    record_path: str,
+    run_ts: str | None,
+    data_root: Path | None,
+    force: bool,
+) -> None:
+    """Regenerate selection report for a run."""
     _configure_logging()
     path = _resolve_record_path(record_path, _data_root_from_env(data_root))
     record = Record.from_path(path)
@@ -214,13 +256,46 @@ def report_cmd(record_path: str, run_ts: str | None, data_root: Path | None) -> 
 
     manifest = json.loads(build_json.read_text())
     constants = manifest["selection_constants"]
-    params = _params_from_constants(constants)
+    params = params_from_constants(constants)
 
-    candidates = load_scored_candidates(slug_path)
-    candidates = select_keyframes(candidates, params)
-    health = assess_selection(candidates, params)
-    write_selection_report(candidates, resolved, constants, health=health)
+    if force:
+        candidates = load_scored_candidates(slug_path)
+        candidates = select_keyframes(candidates, params)
+    else:
+        audit_path = resolved / "selection_audit.csv"
+        if not audit_path.is_file():
+            raise click.ClickException(
+                f"missing {audit_path}; use --force to re-select from scored cache"
+            )
+        candidates = pd.read_csv(audit_path, index_col="FrameNumber")
+
+    view_counts = compute_view_counts(candidates, params)
+    coverage = coverage_metrics(view_counts, params.target_views_per_cell)
+    health = assess_selection(candidates, params, view_counts=view_counts)
+    write_selection_report(
+        candidates,
+        resolved,
+        constants,
+        health=health,
+        view_counts=view_counts,
+        coverage=coverage,
+    )
     click.echo(resolved / "selection_report")
+
+
+@main.command("audit-run")
+@click.argument("record_path")
+@click.option("--run", "run_ts", default=None, help="Run timestamp YYYYMMDDHHMMSS")
+@click.option("--data-root", type=click.Path(path_type=Path), default=None)
+def audit_run_cmd(record_path: str, run_ts: str | None, data_root: Path | None) -> None:
+    """Audit selection and ODM/OpenSfM outputs for an existing run."""
+    from scene_recon.run_audit import write_run_audit
+
+    path = _resolve_record_path(record_path, _data_root_from_env(data_root))
+    record = Record.from_path(path)
+    slug_path = slug_dir(record.data_root, record.slug)
+    resolved = resolve_run(slug_path, run_ts)
+    click.echo(write_run_audit(resolved))
 
 
 if __name__ == "__main__":

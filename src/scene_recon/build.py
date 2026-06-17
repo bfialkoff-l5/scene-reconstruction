@@ -7,7 +7,14 @@ from scene_recon.candidates import selected_candidates
 from scene_recon.export import write_build_manifest, write_geo_txt
 from scene_recon.intrinsics import write_cameras_json
 from scene_recon.odm import write_odm_options
-from scene_recon.frame_select import DEFAULT_SELECTION_PARAMS, SELECTION_POLICY, SelectionParams, select_keyframes
+from scene_recon.selection import (
+    DEFAULT_SELECTION_PARAMS,
+    SELECTION_POLICY,
+    SelectionParams,
+    compute_view_counts,
+    coverage_metrics,
+    select_keyframes,
+)
 from scene_recon.paths import run_dir, slug_dir, stamp_run_ts
 from scene_recon.record import Record
 from scene_recon.scoring import QUALITY_WEIGHT_FEATURES, QUALITY_WEIGHT_SHARPNESS
@@ -84,14 +91,23 @@ def build_record(
         )
 
     candidates = select_keyframes(candidates, selection)
-    health = assess_selection(candidates, selection)
+    view_counts = compute_view_counts(candidates, selection)
+    coverage = coverage_metrics(view_counts, selection.target_views_per_cell)
+    health = assess_selection(candidates, selection, view_counts=view_counts)
 
     run_ts = stamp_run_ts()
     run_path = run_dir(slug_path, run_ts)
     run_path.mkdir(parents=True, exist_ok=True)
 
     constants = _selection_constants(selection)
-    write_selection_report(candidates, run_path, constants, health=health)
+    write_selection_report(
+        candidates,
+        run_path,
+        constants,
+        health=health,
+        view_counts=view_counts,
+        coverage=coverage,
+    )
 
     if not health.passed:
         raise SelectionFailed(health)

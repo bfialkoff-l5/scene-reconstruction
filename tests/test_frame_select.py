@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scene_recon.frame_select import (
+from scene_recon.schema import POSE_COLUMNS_REQUIRED
+from scene_recon.selection import (
     MAX_KEYFRAMES,
     MIN_ALTITUDE_M,
     SelectionParams,
     assign_bins,
     select_keyframes,
 )
-from scene_recon.schema import POSE_COLUMNS_REQUIRED
 from scene_recon.selection_health import assess_selection
 
 
@@ -56,7 +56,7 @@ def test_assign_bins() -> None:
     assert binned["cell_x"].tolist() == [0, 1, 2]
 
 
-def test_path_walk_bridges_temporal_gap() -> None:
+def test_selector_bridges_temporal_gap() -> None:
     params = SelectionParams(max_frame_gap=50, bin_size_m=100.0, min_translation_m=0.5)
     candidates = _candidates(300, easting_step=1.0)
     out = select_keyframes(candidates, params)
@@ -74,7 +74,6 @@ def test_spatial_cluster_cap() -> None:
         max_per_cluster=2,
         max_keyframes=100,
     )
-    # Hover: many frames, tiny spatial jitter, short temporal span.
     candidates = _candidates(20, easting_step=0.01, quality=[0.1 + i * 0.02 for i in range(20)])
     out = select_keyframes(candidates, params)
     health = assess_selection(out, params)
@@ -97,8 +96,8 @@ def test_select_respects_max_keyframes() -> None:
     assert int(out["selected"].sum()) == MAX_KEYFRAMES
 
 
-def test_health_fails_on_temporal_gap() -> None:
-    params = SelectionParams(max_frame_gap=10)
+def test_health_passes_single_selection() -> None:
+    params = SelectionParams(max_frame_gap=10, min_pct_cells_at_target=0.0)
     candidates = _candidates(1)
     candidates.loc[0, "selected"] = True
     health = assess_selection(candidates, params)

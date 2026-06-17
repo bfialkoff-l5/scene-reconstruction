@@ -32,15 +32,6 @@ def run_dir(slug_dir_path: Path, run_ts: str) -> Path:
     return runs_dir(slug_dir_path) / run_ts
 
 
-def odm_dataset_name() -> str:
-    return "odm_input"
-
-
-def odm_project_path(run_dir_path: Path) -> Path:
-    """ODM --project-path: parent of the dataset folder (contains odm_input/)."""
-    return run_dir_path
-
-
 def list_runs(slug_dir_path: Path) -> list[Path]:
     base = runs_dir(slug_dir_path)
     if not base.is_dir():

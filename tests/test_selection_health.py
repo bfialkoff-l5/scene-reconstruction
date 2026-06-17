@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scene_recon.frame_select import SelectionParams, select_keyframes
+from scene_recon.selection import SelectionParams, select_keyframes
 from scene_recon.selection_health import SelectionFailed, assess_selection
 
 
 def _hover_tail_candidates() -> pd.DataFrame:
     rows = []
     frame = 0
-    # Transit along a line.
+    transit_end_e = 664860.0 + 199 * 5.0
     for i in range(200):
         rows.append(
             {
@@ -21,13 +21,12 @@ def _hover_tail_candidates() -> pd.DataFrame:
             }
         )
         frame += 1
-    # Hover with GPS jitter.
     for i in range(80):
         rows.append(
             {
                 "FrameNumber": frame,
-                "easting": 664900.0 + (i % 5) * 0.5,
-                "northing": 3492750.0 + (i % 3) * 0.4,
+                "easting": transit_end_e + (i % 5) * 0.5,
+                "northing": 3492703.0 + (i % 3) * 0.4,
                 "altamsl": 145.0,
                 "quality_score": 0.95,
             }
@@ -59,6 +58,7 @@ def test_hover_tail_capped_and_connected() -> None:
         cluster_radius_m=10.0,
         max_per_cluster=3,
         max_keyframes=500,
+        min_pct_cells_at_target=0.0,
     )
     out = select_keyframes(_hover_tail_candidates(), params)
     health = assess_selection(out, params)
