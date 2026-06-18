@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+from conftest import square_footprints
 
 from scene_recon.schema import POSE_COLUMNS_REQUIRED
 from scene_recon.selection import (
     MAX_KEYFRAMES,
     MIN_ALTITUDE_M,
+    GroundGrid,
     SelectionParams,
     assign_bins,
+    compute_view_counts,
     select_keyframes,
 )
+from scene_recon.selection.footprint import footprint_jaccard
+from scene_recon.selection.selector import airborne_span
 from scene_recon.selection_health import assess_selection
 
 
@@ -49,6 +55,13 @@ def _candidates(
     )
 
 
+def _run(candidates: pd.DataFrame, params: SelectionParams):
+    grid = GroundGrid.from_poses(candidates, bin_size_m=params.bin_size_m)
+    footprints = square_footprints(candidates, grid)
+    out = select_keyframes(candidates, footprints, grid, params)
+    return out, footprints
+
+
 def test_assign_bins() -> None:
     params = SelectionParams()
     candidates = _candidates(3, easting_step=params.bin_size_m)
@@ -56,52 +69,167 @@ def test_assign_bins() -> None:
     assert binned["cell_x"].tolist() == [0, 1, 2]
 
 
-def test_selector_bridges_temporal_gap() -> None:
-    params = SelectionParams(max_frame_gap=50, bin_size_m=100.0, min_translation_m=0.5)
-    candidates = _candidates(300, easting_step=1.0)
-    out = select_keyframes(candidates, params)
-    selected = out[out["selected"]].sort_index()
-    gaps = selected.index.to_series().diff().dropna()
-    assert int(gaps.max()) <= params.max_frame_gap
+def test_stage1_superset_spacing() -> None:
+    """Stage 1 keeps frames once footprint overlap with the last kept drops to
+    <= target; consecutive kept frames must therefore satisfy jaccard <= target,
+    and dense frames must be thinned out (fewer kept than candidates)."""
+    params = SelectionParams(bin_size_m=5.0, max_keyframes=10_000)
+    candidates = _candidates(60, easting_step=5.0)
+    grid = GroundGrid.from_poses(candidates, bin_size_m=params.bin_size_m)
+    footprints = square_footprints(candidates, grid, half_cells=2)
+    out = select_keyframes(candidates, footprints, grid, params)
+    kept = out[out["selected"]].index.to_list()
+    assert 1 < len(kept) < 60, f"expected spacing, kept {len(kept)}/60"
+    tau = params.overlap_jaccard_target
+    for a, b in zip(kept, kept[1:]):
+        j = footprint_jaccard(footprints[a].cells, footprints[b].cells)
+        assert j <= tau + 1e-9, f"consecutive kept {a}->{b} jaccard {j:.3f} > {tau}"
+    others = out[~out["selected"]]["reject_reason"].dropna().unique().tolist()
+    assert "redundant_overlap" in others
 
 
-def test_spatial_cluster_cap() -> None:
-    params = SelectionParams(
-        max_frame_gap=10,
-        bin_size_m=1.0,
-        min_translation_m=0.1,
-        cluster_radius_m=5.0,
-        max_per_cluster=2,
-        max_keyframes=100,
-    )
-    candidates = _candidates(20, easting_step=0.01, quality=[0.1 + i * 0.02 for i in range(20)])
-    out = select_keyframes(candidates, params)
-    health = assess_selection(out, params)
-    assert health.max_cluster_size <= params.max_per_cluster
+def test_stage2_best_quality_per_bin() -> None:
+    """Stage 2 thins the superset into max_keyframes path bins and keeps the
+    highest-quality frame in each."""
+    quality = [0.5] * 10
+    quality[3] = 1.0  # winner of first half
+    quality[8] = 1.0  # winner of second half
+    candidates = _candidates(10, easting_step=5.0, quality=quality)
+    params = SelectionParams(bin_size_m=5.0, max_keyframes=2)
+    out, _ = _run(candidates, params)
+    selected = set(out[out["selected"]].index.to_list())
+    assert selected == {3, 8}, selected
+    assert (out.loc[out["selected"], "selection_reason"] == "keyframe").all()
+    assert (out.loc[[0, 1, 2, 4], "reject_reason"] == "thinned_by_budget").all()
 
 
 def test_select_respects_altitude() -> None:
+    params = SelectionParams()
     candidates = _candidates(1)
     candidates.loc[0, "altamsl"] = MIN_ALTITUDE_M - 1
-    out = select_keyframes(candidates)
+    out, _ = _run(candidates, params)
     assert not out.loc[0, "selected"]
     assert out.loc[0, "reject_reason"] == "below_altitude"
 
 
-def test_select_respects_max_keyframes() -> None:
-    params = SelectionParams(max_keyframes=MAX_KEYFRAMES, max_frame_gap=5, bin_size_m=5.0)
-    n = MAX_KEYFRAMES + 200
+def test_airborne_span_trims_ground_keeps_low_pass() -> None:
+    # rest(100) -> climb(50) -> cruise(80) -> low pass(10) -> cruise(110) -> descent(50) -> rest(100)
+    prof = np.concatenate(
+        [
+            np.full(100, 145.0),
+            np.linspace(145, 230, 50),
+            np.full(80, 230.0),
+            np.full(10, 150.0),
+            np.full(110, 230.0),
+            np.linspace(230, 145, 50),
+            np.full(100, 145.0),
+        ]
+    )
+    mask = airborne_span(prof, 2.0)
+    assert not mask[:100].any()  # pre-takeoff ground trimmed
+    assert not mask[-100:].any()  # post-landing ground trimmed
+    assert mask[240:250].all()  # mid-flight low pass kept (it is airborne)
+    # constant altitude (never leaves ground) keeps everything for other gates to judge
+    assert airborne_span(np.full(50, 145.0), 2.0).all()
+
+
+def test_ground_frames_rejected_on_ground() -> None:
+    n = 200
     candidates = _candidates(n, easting_step=5.0)
-    out = select_keyframes(candidates, params)
-    assert int(out["selected"].sum()) == MAX_KEYFRAMES
+    candidates["altamsl"] = list(np.full(50, 145.0)) + list(np.linspace(145, 230, 30)) + list(np.full(120, 230.0))
+    params = SelectionParams(bin_size_m=5.0)
+    out, _ = _run(candidates, params)
+    assert (out.loc[:49, "reject_reason"] == "on_ground").all()
+    assert not out.loc[:49, "selected"].any()
+
+
+def test_select_respects_max_keyframes() -> None:
+    cap = 50
+    params = SelectionParams(max_keyframes=cap, bin_size_m=5.0)
+    n = cap + 200
+    candidates = _candidates(n, easting_step=5.0)
+    out, _ = _run(candidates, params)
+    assert int(out["selected"].sum()) == cap
+
+
+def test_invalid_footprint_rejected() -> None:
+    params = SelectionParams(bin_size_m=5.0)
+    candidates = _candidates(5, easting_step=5.0)
+    grid = GroundGrid.from_poses(candidates, bin_size_m=params.bin_size_m)
+    footprints = square_footprints(candidates, grid)
+    bad = footprints[2]
+    footprints[2] = type(bad)(
+        frame_number=2,
+        cells=frozenset(),
+        valid=False,
+        valid_frac=0.0,
+        area_m2=0.0,
+        centroid_e=float("nan"),
+        centroid_n=float("nan"),
+        hull_wkt="POLYGON EMPTY",
+        reject_detail="too_few_rays",
+    )
+    out = select_keyframes(candidates, footprints, grid, params)
+    assert out.loc[2, "reject_reason"] == "invalid_footprint"
+    assert not out.loc[2, "selected"]
 
 
 def test_health_passes_single_selection() -> None:
-    params = SelectionParams(max_frame_gap=10, min_pct_cells_at_target=0.0)
+    params = SelectionParams()
     candidates = _candidates(1)
     candidates.loc[0, "selected"] = True
     health = assess_selection(candidates, params)
     assert health.passed
+
+
+def test_two_stage_spreads_across_mission() -> None:
+    """End-to-end: even overlap spacing covers a multi-pass lawnmower mission edge
+    to edge (the regression that green unit tests previously missed)."""
+    rows = []
+    frame = 0
+    origin_e, origin_n = 664860.0, 3492703.0
+    step = 5.0
+    for row in range(4):
+        n = 80
+        for i in range(n):
+            e = origin_e + (i if row % 2 == 0 else n - 1 - i) * step
+            n_ = origin_n + row * 40.0
+            rows.append(
+                {
+                    "FrameNumber": frame,
+                    "easting": e,
+                    "northing": n_,
+                    "altamsl": 150.0,
+                    "quality_score": 0.8,
+                }
+            )
+            frame += 1
+    df = pd.DataFrame(rows).set_index("FrameNumber")
+    for col, val in [
+        ("TimeUS", 0),
+        ("utm_zone", "36N"),
+        ("roll_rad", 0.0),
+        ("pitch_rad", 0.0),
+        ("yaw_rad", 0.0),
+        ("feature_count", 100),
+        ("sharpness", 50.0),
+        ("cell_x", pd.NA),
+        ("cell_y", pd.NA),
+        ("selected", False),
+        ("reject_reason", pd.NA),
+    ]:
+        df[col] = val
+
+    params = SelectionParams(max_keyframes=320, bin_size_m=5.0)
+    grid = GroundGrid.from_poses(df, bin_size_m=params.bin_size_m)
+    footprints = square_footprints(df, grid, half_cells=2)
+    out = select_keyframes(df, footprints, grid, params)
+    sel = out[out["selected"]]
+    assert (sel["selection_reason"] == "keyframe").all()
+    e_span = float(sel["easting"].max() - sel["easting"].min())
+    n_span = float(sel["northing"].max() - sel["northing"].min())
+    assert e_span > 200.0
+    assert n_span > 80.0
 
 
 def test_pose_schema_columns() -> None:

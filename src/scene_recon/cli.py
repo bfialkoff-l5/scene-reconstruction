@@ -19,6 +19,7 @@ from scene_recon.paths import resolve_run, slug_dir
 from scene_recon.record import Record
 from scene_recon.scoring_cache import load_scored_candidates
 from scene_recon.selection_health import assess_selection
+from scene_recon.selection.parallax import approx_cell_ground_z
 from scene_recon.selection_report import write_selection_report
 
 
@@ -54,35 +55,29 @@ def _data_root_from_env(data_root: Path | None) -> Path | None:
 
 def _selection_params_from_cli(
     bin_size_m: float | None,
-    min_translation_m: float | None,
-    min_rotation_deg: float | None,
-    max_frame_gap: int | None,
-    max_per_cluster: int | None,
+    overlap_target: float | None,
     max_keyframes: int | None,
     target_views_per_cell: int | None,
-    min_pct_cells_at_target: float | None,
     max_motion_gap_m: float | None,
     cluster_radius_m: float | None,
+    terrain_gpkg: Path | None,
+    ray_grid: tuple[int, int] | None,
+    datum_offset_m: float | None,
 ) -> SelectionParams:
     defaults = DEFAULT_SELECTION_PARAMS
     return SelectionParams(
         bin_size_m=bin_size_m if bin_size_m is not None else defaults.bin_size_m,
-        min_translation_m=(
-            min_translation_m if min_translation_m is not None else defaults.min_translation_m
+        terrain_gpkg=terrain_gpkg if terrain_gpkg is not None else defaults.terrain_gpkg,
+        ray_grid=ray_grid if ray_grid is not None else defaults.ray_grid,
+        datum_offset_m=datum_offset_m if datum_offset_m is not None else defaults.datum_offset_m,
+        overlap_jaccard_target=(
+            overlap_target if overlap_target is not None else defaults.overlap_jaccard_target
         ),
-        min_rotation_deg=min_rotation_deg if min_rotation_deg is not None else defaults.min_rotation_deg,
-        max_frame_gap=max_frame_gap if max_frame_gap is not None else defaults.max_frame_gap,
-        max_per_cluster=max_per_cluster if max_per_cluster is not None else defaults.max_per_cluster,
         max_keyframes=max_keyframes if max_keyframes is not None else defaults.max_keyframes,
         target_views_per_cell=(
             target_views_per_cell
             if target_views_per_cell is not None
             else defaults.target_views_per_cell
-        ),
-        min_pct_cells_at_target=(
-            min_pct_cells_at_target
-            if min_pct_cells_at_target is not None
-            else defaults.min_pct_cells_at_target
         ),
         max_motion_gap_m=max_motion_gap_m if max_motion_gap_m is not None else defaults.max_motion_gap_m,
         cluster_radius_m=cluster_radius_m if cluster_radius_m is not None else defaults.cluster_radius_m,
@@ -90,34 +85,40 @@ def _selection_params_from_cli(
 
 
 def _selection_options(f):
-    f = click.option("--bin-size-m", type=float, default=None, help="Spatial bin size in meters")(f)
     f = click.option(
-        "--min-translation-m", type=float, default=None, help="Min translation in meters"
-    )(f)
-    f = click.option("--min-rotation-deg", type=float, default=None, help="Min rotation in degrees")(
-        f
-    )
-    f = click.option(
-        "--max-frame-gap", type=int, default=None, help="Max pose rows between selected frames"
+        "--terrain-gpkg",
+        type=click.Path(path_type=Path),
+        default=None,
+        help="DTM GeoPackage for frustum ground intersection (required for build)",
     )(f)
     f = click.option(
-        "--max-per-cluster", type=int, default=None, help="Max selected frames per spatial cluster"
+        "--ray-grid",
+        type=(int, int),
+        default=None,
+        help="Footprint ray sampling grid, e.g. 48 27",
     )(f)
-    f = click.option("--max-keyframes", type=int, default=None, help="Cap on selected frames")(f)
     f = click.option(
-        "--target-views-per-cell", type=int, default=None, help="Views per ground cell target"
-    )(f)
-    f = click.option(
-        "--min-pct-cells-at-target",
+        "--datum-offset-m",
         type=float,
         default=None,
-        help="Min fraction of covered cells at target views (0.0–1.0)",
+        help="Added to DTM elevations to align with pose altamsl datum",
+    )(f)
+    f = click.option("--bin-size-m", type=float, default=None, help="Spatial bin size in meters")(f)
+    f = click.option(
+        "--overlap-target",
+        type=float,
+        default=None,
+        help="Stage-1 spacing: keep next frame when footprint Jaccard drops to <= this (0.0–1.0)",
+    )(f)
+    f = click.option("--max-keyframes", type=int, default=None, help="Hard cap on selected frames")(f)
+    f = click.option(
+        "--target-views-per-cell", type=int, default=None, help="Views per ground cell target (reporting)"
     )(f)
     f = click.option(
-        "--max-motion-gap-m", type=float, default=None, help="Max motion gap between selected frames"
+        "--max-motion-gap-m", type=float, default=None, help="Motion gap warning threshold (warn only)"
     )(f)
     f = click.option(
-        "--cluster-radius-m", type=float, default=None, help="Spatial cluster radius in meters"
+        "--cluster-radius-m", type=float, default=None, help="Spatial cluster radius in meters (reporting)"
     )(f)
     return f
 
@@ -139,15 +140,14 @@ def build_cmd(
     select_only: bool,
     rescore: bool,
     bin_size_m: float | None,
-    min_translation_m: float | None,
-    min_rotation_deg: float | None,
-    max_frame_gap: int | None,
-    max_per_cluster: int | None,
+    overlap_target: float | None,
     max_keyframes: int | None,
     target_views_per_cell: int | None,
-    min_pct_cells_at_target: float | None,
     max_motion_gap_m: float | None,
     cluster_radius_m: float | None,
+    terrain_gpkg: Path | None,
+    ray_grid: tuple[int, int] | None,
+    datum_offset_m: float | None,
 ) -> None:
     """Score (if needed), select keyframes, and export ODM input."""
     from scene_recon.selection_health import SelectionFailed
@@ -156,15 +156,14 @@ def build_cmd(
     path = _resolve_record_path(record_path, _data_root_from_env(data_root))
     params = _selection_params_from_cli(
         bin_size_m,
-        min_translation_m,
-        min_rotation_deg,
-        max_frame_gap,
-        max_per_cluster,
+        overlap_target,
         max_keyframes,
         target_views_per_cell,
-        min_pct_cells_at_target,
         max_motion_gap_m,
         cluster_radius_m,
+        terrain_gpkg,
+        ray_grid,
+        datum_offset_m,
     )
     try:
         run_path = build_record(
@@ -258,9 +257,22 @@ def report_cmd(
     constants = manifest["selection_constants"]
     params = params_from_constants(constants)
 
+    from scene_recon.build import FOOTPRINTS_FILENAME
+    from scene_recon.selection import GroundGrid, load_footprints
+
+    footprints_path = slug_path / FOOTPRINTS_FILENAME
+    if not footprints_path.is_file():
+        raise click.ClickException(
+            f"missing {footprints_path}; re-run build to regenerate the footprint cache"
+        )
+    footprints = load_footprints(footprints_path)
+
     if force:
         candidates = load_scored_candidates(slug_path)
-        candidates = select_keyframes(candidates, params)
+        grid = GroundGrid.from_poses(
+            candidates, bin_size_m=params.bin_size_m, margin_m=params.terrain_margin_m
+        )
+        candidates = select_keyframes(candidates, footprints, grid, params)
     else:
         audit_path = resolved / "selection_audit.csv"
         if not audit_path.is_file():
@@ -268,10 +280,28 @@ def report_cmd(
                 f"missing {audit_path}; use --force to re-select from scored cache"
             )
         candidates = pd.read_csv(audit_path, index_col="FrameNumber")
+        grid = GroundGrid.from_poses(
+            candidates, bin_size_m=params.bin_size_m, margin_m=params.terrain_margin_m
+        )
 
-    view_counts = compute_view_counts(candidates, params)
-    coverage = coverage_metrics(view_counts, params.target_views_per_cell)
-    health = assess_selection(candidates, params, view_counts=view_counts)
+    mission_cells = grid.mission_cells(footprints.values())
+    cell_ground_z = approx_cell_ground_z(grid, mission_cells, candidates)
+    view_counts = compute_view_counts(candidates, footprints)
+    coverage = coverage_metrics(
+        view_counts,
+        params.target_views_per_cell,
+        mission_cells=mission_cells,
+        bin_size_m=params.bin_size_m,
+    )
+    health = assess_selection(
+        candidates,
+        params,
+        view_counts=view_counts,
+        mission_cells=mission_cells,
+        footprints=footprints,
+        grid=grid,
+        cell_ground_z=cell_ground_z,
+    )
     write_selection_report(
         candidates,
         resolved,
@@ -279,6 +309,9 @@ def report_cmd(
         health=health,
         view_counts=view_counts,
         coverage=coverage,
+        grid=grid,
+        footprints=footprints,
+        cell_ground_z=cell_ground_z,
     )
     click.echo(resolved / "selection_report")
 

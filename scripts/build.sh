@@ -30,4 +30,7 @@ fi
 
 CONTAINER_RECORD="$(record_container_path "$RECORD")"
 
-docker compose run --rm builder build "$CONTAINER_RECORD" "$@"
+# Stream logs/progress (stderr) live; capture the run dir the CLI echoes on stdout
+# and translate the container /data path back to the host DATA_ROOT path.
+CONTAINER_RUN_DIR="$(docker compose run --rm -T builder build "$CONTAINER_RECORD" "$@" | tail -n1)"
+container_to_host_path "$CONTAINER_RUN_DIR"

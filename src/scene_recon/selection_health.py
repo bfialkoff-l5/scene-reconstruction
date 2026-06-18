@@ -7,13 +7,20 @@ import pandas as pd
 
 from scene_recon.selection import (
     SelectionParams,
-    compute_view_counts,
     coverage_metrics,
     iter_selection_gaps,
     max_local_density,
 )
-from scene_recon.selection.footprint import ViewCounts
+from scene_recon.selection.footprint import FootprintCache, ViewCounts
+from scene_recon.selection.grid import GroundGrid
 from scene_recon.selection.metrics import CoverageMetrics
+from scene_recon.selection.parallax import (
+    CellGroundZ,
+    ParallaxMetrics,
+    approx_cell_ground_z,
+    build_parallax_context,
+    parallax_metrics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,25 +37,10 @@ class SelectionHealth:
     largest_cluster: dict | None
     n_selected: int
     coverage: CoverageMetrics
-
-    @property
-    def n_cells_covered(self) -> int:
-        return self.coverage.n_cells_covered
-
-    @property
-    def n_cells_at_target(self) -> int:
-        return self.coverage.n_cells_at_target
-
-    @property
-    def pct_cells_at_target(self) -> float:
-        return self.coverage.pct_cells_at_target
-
-    @property
-    def mean_views_per_cell(self) -> float:
-        return self.coverage.mean_views_per_cell
+    parallax: ParallaxMetrics | None = None
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "passed": self.passed,
             "failures": self.failures,
             "max_temporal_gap": self.max_temporal_gap,
@@ -58,11 +50,16 @@ class SelectionHealth:
             "max_cluster_size": self.max_cluster_size,
             "largest_cluster": self.largest_cluster,
             "n_selected": self.n_selected,
+            "n_cells_mission": self.coverage.n_cells_mission,
             "n_cells_covered": self.coverage.n_cells_covered,
             "n_cells_at_target": self.coverage.n_cells_at_target,
-            "pct_cells_at_target": round(self.coverage.pct_cells_at_target, 4),
-            "mean_views_per_cell": round(self.coverage.mean_views_per_cell, 2),
+            "pct_covered_at_target": round(self.coverage.pct_covered_at_target, 4),
+            "pct_mission_at_target": round(self.coverage.pct_mission_at_target, 4),
+            "mean_views_per_covered_cell": round(self.coverage.mean_views_per_covered_cell, 2),
         }
+        if self.parallax is not None:
+            out["parallax"] = self.parallax.as_dict()
+        return out
 
 
 class SelectionFailed(Exception):
@@ -76,6 +73,10 @@ def assess_selection(
     params: SelectionParams,
     *,
     view_counts: ViewCounts | None = None,
+    mission_cells: frozenset[tuple[int, int]] | None = None,
+    footprints: FootprintCache | None = None,
+    grid: GroundGrid | None = None,
+    cell_ground_z: CellGroundZ | None = None,
 ) -> SelectionHealth:
     selected = candidates[candidates["selected"]].sort_index()
     failures: list[str] = []
@@ -96,15 +97,10 @@ def assess_selection(
     if n_selected == 0:
         failures.append("no frames selected")
     elif max_motion_gap_m > params.max_motion_gap_m:
-        failures.append(
-            f"max motion gap {max_motion_gap_m:.1f}m exceeds limit {params.max_motion_gap_m:.1f}m"
-        )
-
-    if n_selected >= 2 and max_temporal_gap > params.max_frame_gap:
         log.warning(
-            "temporal gap %d frames exceeds max_frame_gap %d (warn only)",
-            max_temporal_gap,
-            params.max_frame_gap,
+            "max motion gap %.1fm exceeds limit %.1fm (warn only; ODM matches globally)",
+            max_motion_gap_m,
+            params.max_motion_gap_m,
         )
 
     max_cluster_size, densest_members = max_local_density(
@@ -116,20 +112,41 @@ def assess_selection(
         else None
     )
 
-    if max_cluster_size > params.max_per_cluster:
-        failures.append(
-            f"spatial cluster size {max_cluster_size} exceeds limit {params.max_per_cluster}"
-        )
+    coverage = coverage_metrics(
+        view_counts or {},
+        params.target_views_per_cell,
+        mission_cells=mission_cells,
+        bin_size_m=params.bin_size_m,
+    )
 
-    if view_counts is None:
-        view_counts = compute_view_counts(candidates, params) if n_selected else {}
-    coverage = coverage_metrics(view_counts, params.target_views_per_cell)
+    # Honest hard gate: did selection actually cover the site? Only enforced when we
+    # have a real mission region to measure against (footprints/view_counts present).
+    if n_selected and view_counts and coverage.n_cells_mission:
+        pct_covered = coverage.n_cells_covered / coverage.n_cells_mission
+        if pct_covered < params.min_pct_mission_covered:
+            failures.append(
+                f"only {pct_covered:.0%} of mission cells covered "
+                f"(need {params.min_pct_mission_covered:.0%}); budget likely too small"
+            )
 
-    if n_selected and coverage.pct_cells_at_target < params.min_pct_cells_at_target:
-        failures.append(
-            f"only {coverage.pct_cells_at_target:.0%} of {coverage.n_cells_covered} covered cells reach "
-            f"target {params.target_views_per_cell} views (need {params.min_pct_cells_at_target:.0%})"
-        )
+    # Convergence/parallax is a verification metric (reported, never a gate): ODM
+    # triangulates from whatever baselines the even sampling produced.
+    parallax: ParallaxMetrics | None = None
+    if (
+        n_selected
+        and footprints is not None
+        and grid is not None
+        and candidates["selected"].any()
+    ):
+        from scene_recon.selection.parallax import cell_viewers_from_selection
+
+        ground_z = cell_ground_z
+        if ground_z is None:
+            cells = mission_cells or grid.mission_cells(footprints.values())
+            ground_z = approx_cell_ground_z(grid, cells, candidates)
+        ctx = build_parallax_context(candidates)
+        viewers = cell_viewers_from_selection(candidates, footprints)
+        parallax = parallax_metrics(viewers, ctx, grid, ground_z, params)
 
     return SelectionHealth(
         passed=not failures,
@@ -142,4 +159,5 @@ def assess_selection(
         largest_cluster=largest_cluster,
         n_selected=n_selected,
         coverage=coverage,
+        parallax=parallax,
     )

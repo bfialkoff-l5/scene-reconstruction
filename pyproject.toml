@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=1.26",
     "opencv-python-headless>=4.8",
     "pandas>=2.0",
+    "rasterio>=1.4.4",
     "tqdm>=4.66",
 ]
 
