@@ -47,3 +47,6 @@ Thumbs.db
 # Project specific
 odm-results/
 *.log
+
+# EC2 launch helper runtime state
+.ec2-instance-id
