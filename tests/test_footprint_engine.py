@@ -5,9 +5,48 @@ from affine import Affine
 
 from scene_recon.camera import Camera
 from scene_recon.geometry.extrinsics import CameraPose
-from scene_recon.geometry.footprint import ground_footprint
+from scene_recon.geometry.footprint import _convex_hull_wkt, ground_footprint
 from scene_recon.geometry.terrain import TerrainModel
 from scene_recon.selection.grid import GroundGrid
+
+
+def _naive_hull_wkt(points: np.ndarray) -> str:
+    # Reference: full monotone chain over every (deduped) point, no Akl cull.
+    pts = sorted({(round(float(e), 2), round(float(n), 2)) for e, n in points})
+    if len(pts) < 3:
+        ring = pts
+    else:
+        def cr(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        lo: list = []
+        for p in pts:
+            while len(lo) >= 2 and cr(lo[-2], lo[-1], p) <= 0:
+                lo.pop()
+            lo.append(p)
+        up: list = []
+        for p in reversed(pts):
+            while len(up) >= 2 and cr(up[-2], up[-1], p) <= 0:
+                up.pop()
+            up.append(p)
+        ring = lo[:-1] + up[:-1]
+    if not ring:
+        return "POLYGON EMPTY"
+    closed = ring + [ring[0]]
+    return "POLYGON ((" + ", ".join(f"{e:.2f} {n:.2f}" for e, n in closed) + "))"
+
+
+def test_convex_hull_matches_naive() -> None:
+    # The Akl-Toussaint interior cull must not change the hull, even on
+    # degenerate inputs (collinear, duplicate, on-edge, tiny).
+    rng = np.random.default_rng(0)
+    cases = [
+        rng.normal((500.0, 600.0), (40.0, 25.0), (800, 2)),
+        np.column_stack([np.arange(40.0), np.arange(40.0)]),  # collinear
+        rng.integers(-3, 3, (300, 2)).astype(float),          # many duplicates
+        np.array([[0.0, 0.0], [5.0, 0.0], [10.0, 0.0], [5.0, 8.0]]),  # point on edge
+    ]
+    for pts in cases:
+        assert _convex_hull_wkt(pts) == _naive_hull_wkt(pts)
 
 
 def _flat_terrain(size: int = 400, cell: float = 10.0) -> TerrainModel:
