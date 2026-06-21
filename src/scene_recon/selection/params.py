@@ -74,7 +74,13 @@ MIN_PCT_MISSION_COVERED = 0.5
 
 # Footprint engine (DTM ray-march)
 RAY_GRID = (48, 27)
-MAX_RANGE_M = 2000.0
+# Max ray slant range. On 0088 no ray ever hits past ~1113 m (p99.9 = 914 m), and
+# cells seen only beyond ~800 m are far near-horizon fringe (huge GSD, grazing,
+# low-value for reconstruction). 800 keeps 99.4% of cells and stops shallow rays
+# from marching the old 2000 m ceiling (~200 steps) on oblique/takeoff frames,
+# which was the cause of the throughput decay. Raise toward 1200 for bit-identical
+# footprints if a flight flies higher / more oblique.
+MAX_RANGE_M = 800.0
 RAY_STEP_M = 10.0
 MIN_VALID_RAY_FRAC = 0.25
 DATUM_OFFSET_M = 0.0
