@@ -54,7 +54,16 @@ echo "ODM project path: $CONTAINER_PROJECT_PATH (dataset: $ODM_DATASET)"
 if [[ ${#ODM_ARGS[@]} -eq 0 ]]; then
   ODM_ARGS=(--fast-orthophoto)
 fi
+
+# Bind our lab calibration (intrinsicK.csv -> cameras.json) and stop ODM from
+# self-calibrating. Without this ODM defaults to a 0.85 focal prior on our
+# EXIF-less frames and the bundle adjust diverges (principal point off-image,
+# OpenMVS fuses 0 points). cameras.json is keyed to ODM's detected camera id so
+# the override actually binds; see Camera.camera_id().
+CAMERAS_JSON="$CONTAINER_PROJECT_PATH/$ODM_DATASET/cameras.json"
 docker compose run --rm odm \
   --project-path "$CONTAINER_PROJECT_PATH" \
   "$ODM_DATASET" \
+  --cameras "$CAMERAS_JSON" \
+  --use-fixed-camera-params \
   "${ODM_ARGS[@]}"

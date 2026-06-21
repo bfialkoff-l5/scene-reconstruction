@@ -5,6 +5,7 @@ services:
     volumes:
       - ./src/scene_recon:/app/src/scene_recon
       - ${DATA_ROOT}:/data
+      - ${GEO_RESOURCES}:/geo:ro
       - ${AWS_CREDENTIALS_MOUNT:-./.aws-empty}:/app/.aws:ro
     environment:
       HOME: /app

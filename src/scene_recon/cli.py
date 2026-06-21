@@ -55,7 +55,9 @@ def _data_root_from_env(data_root: Path | None) -> Path | None:
 
 def _selection_params_from_cli(
     bin_size_m: float | None,
-    overlap_target: float | None,
+    keyframe_spacing: float | None,
+    gsd_ratio_max: float | None,
+    max_views_per_cell: int | None,
     max_keyframes: int | None,
     target_views_per_cell: int | None,
     max_motion_gap_m: float | None,
@@ -70,8 +72,14 @@ def _selection_params_from_cli(
         terrain_gpkg=terrain_gpkg if terrain_gpkg is not None else defaults.terrain_gpkg,
         ray_grid=ray_grid if ray_grid is not None else defaults.ray_grid,
         datum_offset_m=datum_offset_m if datum_offset_m is not None else defaults.datum_offset_m,
-        overlap_jaccard_target=(
-            overlap_target if overlap_target is not None else defaults.overlap_jaccard_target
+        keyframe_spacing_m=(
+            keyframe_spacing if keyframe_spacing is not None else defaults.keyframe_spacing_m
+        ),
+        gsd_ratio_max=(
+            gsd_ratio_max if gsd_ratio_max is not None else defaults.gsd_ratio_max
+        ),
+        max_views_per_cell=(
+            max_views_per_cell if max_views_per_cell is not None else defaults.max_views_per_cell
         ),
         max_keyframes=max_keyframes if max_keyframes is not None else defaults.max_keyframes,
         target_views_per_cell=(
@@ -105,10 +113,24 @@ def _selection_options(f):
     )(f)
     f = click.option("--bin-size-m", type=float, default=None, help="Spatial bin size in meters")(f)
     f = click.option(
-        "--overlap-target",
+        "--keyframe-spacing",
         type=float,
         default=None,
-        help="Stage-1 spacing: keep next frame when footprint Jaccard drops to <= this (0.0–1.0)",
+        help="Stage-1 spacing: keep next frame once the camera has moved this many metres "
+        "(the triangulation baseline; ~8 m gives b/d~0.1 at an 80 m survey)",
+    )(f)
+    f = click.option(
+        "--gsd-ratio-max",
+        type=float,
+        default=None,
+        help="Drop frames whose GSD is finer than the flight median by more than this "
+        "ratio (large value disables)",
+    )(f)
+    f = click.option(
+        "--max-views-per-cell",
+        type=int,
+        default=None,
+        help="Cull redundant frames down to this many views/ground-cell (0 disables)",
     )(f)
     f = click.option("--max-keyframes", type=int, default=None, help="Hard cap on selected frames")(f)
     f = click.option(
@@ -140,7 +162,9 @@ def build_cmd(
     select_only: bool,
     rescore: bool,
     bin_size_m: float | None,
-    overlap_target: float | None,
+    keyframe_spacing: float | None,
+    gsd_ratio_max: float | None,
+    max_views_per_cell: int | None,
     max_keyframes: int | None,
     target_views_per_cell: int | None,
     max_motion_gap_m: float | None,
@@ -156,7 +180,9 @@ def build_cmd(
     path = _resolve_record_path(record_path, _data_root_from_env(data_root))
     params = _selection_params_from_cli(
         bin_size_m,
-        overlap_target,
+        keyframe_spacing,
+        gsd_ratio_max,
+        max_views_per_cell,
         max_keyframes,
         target_views_per_cell,
         max_motion_gap_m,
@@ -172,7 +198,7 @@ def build_cmd(
             rescore=rescore,
             params=params,
         )
-    except SelectionFailed as exc:
+    except (SelectionFailed, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(run_path)
 

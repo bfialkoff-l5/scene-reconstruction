@@ -8,7 +8,6 @@ import pandas as pd
 from scene_recon.selection.footprint import (
     FootprintCache,
     assign_bins,
-    footprint_jaccard,
 )
 from scene_recon.selection.grid import GroundGrid
 from scene_recon.selection.params import DEFAULT_SELECTION_PARAMS, SelectionParams
@@ -79,20 +78,49 @@ def _write_footprint_columns(out: pd.DataFrame, footprints: FootprintCache) -> N
         out.loc[idx, "footprint_cell_count"] = len(fp.cells)
 
 
-def _overlap_superset(
-    frames: list[int], footprints: FootprintCache, target: float
+def _distance_superset(
+    frames: list[int], pos: dict[int, tuple[float, float]], spacing_m: float
 ) -> list[int]:
     """Stage 1: walk eligible frames in time order, keep the first, then keep the
-    next frame once its footprint Jaccard with the last kept frame has dropped to
-    ``<= target``. Density adapts to true ground overlap (higher altitude -> bigger
-    footprint -> larger spacing). Output is the overlap-complete superset."""
+    next frame once the camera has moved ``>= spacing_m`` from the last kept frame.
+    The distance between consecutive keepers is the triangulation baseline, so this
+    guarantees parallax (b/d = spacing/depth) and naturally adapts: a hovering/slow
+    segment is thinned to almost nothing, a fast traverse keeps every qualifying
+    frame, and a block-boundary teleport (> spacing) always starts a fresh keeper.
+
+    Uses camera position, not footprint overlap, on purpose: footprint Jaccard at
+    oblique pitch is dominated by attitude noise (see params.KEYFRAME_SPACING_M) and
+    selected zero-baseline near-duplicates that SfM cannot triangulate."""
     superset = [frames[0]]
-    last_cells = footprints[frames[0]].cells
+    lx, ly = pos[frames[0]]
     for idx in frames[1:]:
-        if footprint_jaccard(footprints[idx].cells, last_cells) <= target:
+        x, y = pos[idx]
+        if (x - lx) ** 2 + (y - ly) ** 2 >= spacing_m * spacing_m:
             superset.append(idx)
-            last_cells = footprints[idx].cells
+            lx, ly = x, y
     return superset
+
+
+def _coverage_cull(
+    frames: list[int], footprints: FootprintCache, quality: pd.Series, floor: int
+) -> tuple[list[int], list[int]]:
+    """Drop redundant frames while every footprint cell keeps > ``floor`` views from
+    the survivors. Worst-quality frames are considered first so the sharpest survive.
+    Returns (survivors_in_path_order, dropped)."""
+    counts: dict[tuple[int, int], int] = {}
+    for i in frames:
+        for c in footprints[i].cells:
+            counts[c] = counts.get(c, 0) + 1
+    kept = set(frames)
+    dropped: list[int] = []
+    for i in sorted(frames, key=lambda j: float(quality.loc[j])):
+        cells = footprints[i].cells
+        if cells and all(counts[c] > floor for c in cells):
+            kept.discard(i)
+            dropped.append(i)
+            for c in cells:
+                counts[c] -= 1
+    return [i for i in frames if i in kept], dropped
 
 
 def _thin_to_cap(superset: list[int], quality: pd.Series, cap: int) -> list[int]:
@@ -142,36 +170,77 @@ def select_keyframes(
         index=out.index,
     )
     out.loc[eligible & scored & ~valid_fp, "reject_reason"] = "invalid_footprint"
+    usable = eligible & scored & valid_fp
 
-    pool = out.loc[eligible & scored & valid_fp].sort_index()
+    # GSD-consistency floor (Goesele: keep matched views within a small resolution
+    # ratio, ~1<=r<2). GSD is proportional to AGL, so drop frames flying lower than
+    # the flight median by more than gsd_ratio_max -- the near-ground frames whose
+    # sub-cm GSD poisons ODM's DSM sizing (a 1 cm DSM over a 410 m site -> OOM).
+    # Self-calibrating to the flight's own median; a large ratio disables the gate.
+    # Needs the per-frame agl_m column (added by build.py from the DTM); absent it
+    # (unit tests, report re-render) the gate is a no-op.
+    if usable.any() and "agl_m" in out.columns:
+        agl = pd.to_numeric(out["agl_m"], errors="coerce")
+        floor = float(agl[usable].median()) / p.gsd_ratio_max
+        fine = usable & (agl < floor)
+        out.loc[fine, "reject_reason"] = "fine_gsd"
+        usable = usable & ~fine
+        if fine.any():
+            log.info(
+                "GSD floor: dropped %d frames below AGL %.1f m (median AGL/%.1f)",
+                int(fine.sum()),
+                floor,
+                p.gsd_ratio_max,
+            )
+
+    pool = out.loc[usable].sort_index()
     if pool.empty:
         log.warning("no eligible frames after gate; nothing selected")
         return out
 
     frames = [int(i) for i in pool.index]
 
-    # --- Stage 1: no-cap overlap-spacing superset ---
-    superset = _overlap_superset(frames, footprints, p.overlap_jaccard_target)
+    quality = out["quality_score"].astype(float)
+
+    # --- Stage 1: no-cap distance-spacing superset (baseline = keyframe spacing) ---
+    pos = {
+        int(i): (float(e), float(n))
+        for i, e, n in zip(pool.index, pool["easting"], pool["northing"])
+    }
+    superset = _distance_superset(frames, pos, p.keyframe_spacing_m)
+
+    # --- Stage 1b (optional): cull over-covered redundant frames ---
+    over_covered: list[int] = []
+    culled = superset
+    if p.max_views_per_cell > 0:
+        culled, over_covered = _coverage_cull(
+            superset, footprints, quality, p.max_views_per_cell
+        )
 
     # --- Stage 2: thin to the hard budget cap (best quality per path bin) ---
-    keep = _thin_to_cap(superset, out["quality_score"].astype(float), p.max_keyframes)
+    keep = _thin_to_cap(culled, quality, p.max_keyframes)
 
     keep_set = set(keep)
+    culled_set = set(culled)
     superset_set = set(superset)
     out.loc[keep, "selected"] = True
     out.loc[keep, "selection_reason"] = "keyframe"
     out.loc[keep, "reject_reason"] = pd.NA
 
-    thinned = [i for i in superset if i not in keep_set]
+    thinned = [i for i in culled if i not in keep_set]
     out.loc[thinned, "reject_reason"] = "thinned_by_budget"
+    out.loc[over_covered, "reject_reason"] = "over_covered"
     redundant = [i for i in frames if i not in superset_set]
-    out.loc[redundant, "reject_reason"] = "redundant_overlap"
+    out.loc[redundant, "reject_reason"] = "redundant_spacing"
 
     log.info(
-        "selection: %d eligible -> %d superset (overlap target %.2f) -> %d keyframes (cap %d)",
+        "selection: %d eligible -> %d superset (spacing %.1f m) -> %d after cull "
+        "(>%d views/cell) -> %d keyframes (cap %d)",
         len(frames),
         len(superset),
-        p.overlap_jaccard_target,
+        p.keyframe_spacing_m,
+        len(culled_set),
+        p.max_views_per_cell,
         len(keep),
         p.max_keyframes,
     )

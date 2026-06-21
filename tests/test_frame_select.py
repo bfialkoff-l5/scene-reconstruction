@@ -14,7 +14,6 @@ from scene_recon.selection import (
     compute_view_counts,
     select_keyframes,
 )
-from scene_recon.selection.footprint import footprint_jaccard
 from scene_recon.selection.selector import airborne_span
 from scene_recon.selection_health import assess_selection
 
@@ -70,22 +69,24 @@ def test_assign_bins() -> None:
 
 
 def test_stage1_superset_spacing() -> None:
-    """Stage 1 keeps frames once footprint overlap with the last kept drops to
-    <= target; consecutive kept frames must therefore satisfy jaccard <= target,
-    and dense frames must be thinned out (fewer kept than candidates)."""
-    params = SelectionParams(bin_size_m=5.0, max_keyframes=10_000)
-    candidates = _candidates(60, easting_step=5.0)
+    """Stage 1 keeps a new frame once the camera has moved >= keyframe_spacing_m, so
+    consecutive kept frames are at least that far apart (a real triangulation
+    baseline) and dense frames get thinned out."""
+    spacing = 8.0
+    params = SelectionParams(
+        bin_size_m=5.0, max_keyframes=10_000, keyframe_spacing_m=spacing
+    )
+    candidates = _candidates(60, easting_step=2.0)  # 2 m/frame -> keep ~every 4th
     grid = GroundGrid.from_poses(candidates, bin_size_m=params.bin_size_m)
     footprints = square_footprints(candidates, grid, half_cells=2)
     out = select_keyframes(candidates, footprints, grid, params)
     kept = out[out["selected"]].index.to_list()
     assert 1 < len(kept) < 60, f"expected spacing, kept {len(kept)}/60"
-    tau = params.overlap_jaccard_target
     for a, b in zip(kept, kept[1:]):
-        j = footprint_jaccard(footprints[a].cells, footprints[b].cells)
-        assert j <= tau + 1e-9, f"consecutive kept {a}->{b} jaccard {j:.3f} > {tau}"
+        d = abs(candidates.loc[b, "easting"] - candidates.loc[a, "easting"])
+        assert d >= spacing - 1e-9, f"consecutive kept {a}->{b} only {d:.1f} m apart"
     others = out[~out["selected"]]["reject_reason"].dropna().unique().tolist()
-    assert "redundant_overlap" in others
+    assert "redundant_spacing" in others
 
 
 def test_stage2_best_quality_per_bin() -> None:
@@ -95,12 +96,37 @@ def test_stage2_best_quality_per_bin() -> None:
     quality[3] = 1.0  # winner of first half
     quality[8] = 1.0  # winner of second half
     candidates = _candidates(10, easting_step=5.0, quality=quality)
-    params = SelectionParams(bin_size_m=5.0, max_keyframes=2)
+    # spacing 0 keeps every frame in the superset, isolating the Stage-2 thinning
+    params = SelectionParams(bin_size_m=5.0, max_keyframes=2, keyframe_spacing_m=0.0)
     out, _ = _run(candidates, params)
     selected = set(out[out["selected"]].index.to_list())
     assert selected == {3, 8}, selected
     assert (out.loc[out["selected"], "selection_reason"] == "keyframe").all()
     assert (out.loc[[0, 1, 2, 4], "reject_reason"] == "thinned_by_budget").all()
+
+
+def test_coverage_cull_caps_redundancy() -> None:
+    from scene_recon.geometry.footprint import GroundFootprint
+    from scene_recon.selection.selector import _coverage_cull
+
+    def _fp(f: int) -> GroundFootprint:
+        return GroundFootprint(
+            frame_number=f, cells=frozenset({(0, 0), (0, 1)}), valid=True,
+            valid_frac=1.0, area_m2=0.0, centroid_e=0.0, centroid_n=0.0,
+            hull_wkt="", reject_detail=None,
+        )
+
+    fps = {i: _fp(i) for i in range(10)}
+    quality = pd.Series({i: i / 10.0 for i in range(10)})
+    survivors, dropped = _coverage_cull(list(range(10)), fps, quality, floor=3)
+    assert set(survivors) == {7, 8, 9}  # 3 highest-quality survive the floor
+    assert len(dropped) == 7
+    # every cell retains exactly the floor's worth of views
+    counts = {}
+    for i in survivors:
+        for c in fps[i].cells:
+            counts[c] = counts.get(c, 0) + 1
+    assert all(v == 3 for v in counts.values())
 
 
 def test_select_respects_altitude() -> None:
@@ -172,6 +198,27 @@ def test_invalid_footprint_rejected() -> None:
     out = select_keyframes(candidates, footprints, grid, params)
     assert out.loc[2, "reject_reason"] == "invalid_footprint"
     assert not out.loc[2, "selected"]
+
+
+def test_fine_gsd_outliers_rejected() -> None:
+    """A frame flying far lower than the flight median (fine GSD) is dropped by the
+    GSD-consistency floor, and a large gsd_ratio_max disables the gate."""
+    candidates = _candidates(20, easting_step=5.0)
+    candidates["agl_m"] = 60.0  # uniform survey altitude...
+    candidates.loc[5, "agl_m"] = 5.0  # ...except one near-ground frame (60/5 = 12x > 3)
+    grid = GroundGrid.from_poses(candidates, bin_size_m=5.0)
+    footprints = square_footprints(candidates, grid, half_cells=2)
+
+    out = select_keyframes(
+        candidates, footprints, grid, SelectionParams(bin_size_m=5.0, gsd_ratio_max=3.0)
+    )
+    assert out.loc[5, "reject_reason"] == "fine_gsd"
+    assert not out.loc[5, "selected"]
+
+    out_off = select_keyframes(
+        candidates, footprints, grid, SelectionParams(bin_size_m=5.0, gsd_ratio_max=1e9)
+    )
+    assert int((out_off["reject_reason"] == "fine_gsd").sum()) == 0
 
 
 def test_health_passes_single_selection() -> None:

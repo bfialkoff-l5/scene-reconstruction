@@ -59,10 +59,15 @@ def test_odm_normalization() -> None:
     assert cam.focal_y == pytest.approx(2276.21216 / 1920)
     assert cam.c_x == pytest.approx((945.863866 - 960) / 1920)
     assert cam.c_y == pytest.approx((493.567277 - 540) / 1920)
-    assert "1920 1080 brown" in cam.camera_id()
+    # Must byte-match the key ODM derives from EXIF-less PNGs (opendm/photo.py:
+    # "v2" + empty make/model + w h + projection + 0.85 focal prior, lowercased) so
+    # the --cameras override binds instead of ODM self-calibrating.
+    assert cam.camera_id() == "v2   1920 1080 brown 0.85"
     entry = cam.to_odm_entry()
     assert entry["projection_type"] == "brown"
     assert entry["k1"] == pytest.approx(-0.01915783)
+    # the override VALUES still carry the real calibrated focal, not the 0.85 key prior
+    assert entry["focal_x"] == pytest.approx(2274.31688 / 1920)
 
 
 def test_pixels_to_rays() -> None:

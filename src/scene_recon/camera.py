@@ -122,7 +122,18 @@ class Camera:
         return (self.cy - self.height / 2) / self.max_dim
 
     def camera_id(self) -> str:
-        return f"unknown unknown {self.width} {self.height} brown {self.focal_x:.4f}"
+        # Must BYTE-MATCH the camera key ODM derives from our frames, or its
+        # --cameras override silently won't bind and ODM self-calibrates from a
+        # default focal (observed: it diverged to a principal point 681 px outside
+        # the image and OpenMVS fused 0 points). ODM's opendm/photo.py builds the id
+        # as " ".join(["v2", make.strip(), model.strip(), w, h, projection,
+        # str(focal_ratio)[:6]]).lower(). Our frames are EXIF-less PNGs, so make and
+        # model are empty (hence the doubled spaces) and the focal_ratio prior is
+        # 0.85. The real calibration rides in to_odm_entry()'s values, not the key.
+        # ponytail: pinned to ODM 3.5.x no-EXIF defaults ("v2", 0.85 prior). If we
+        # ever embed EXIF focal in the frames, or bump ODM and the key format moves,
+        # regenerate this from opensfm/camera_models.json instead of hardcoding.
+        return f"v2   {self.width} {self.height} brown 0.85"
 
     def to_odm_entry(self) -> dict[str, object]:
         return {

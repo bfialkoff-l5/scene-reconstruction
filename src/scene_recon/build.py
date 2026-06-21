@@ -139,6 +139,19 @@ def build_record(
 
     selection = params or DEFAULT_SELECTION_PARAMS
 
+    # Fail fast (before the expensive scoring pass) on missing/unreadable inputs.
+    will_reuse_footprints = (
+        select_only and not rescore and (slug_path / FOOTPRINTS_FILENAME).is_file()
+    )
+    if not will_reuse_footprints:
+        if selection.terrain_gpkg is None:
+            raise ValueError(
+                f"policy {SELECTION_POLICY} requires --terrain-gpkg (DTM GeoPackage) "
+                "to compute footprints"
+            )
+        if not Path(selection.terrain_gpkg).is_file():
+            raise ValueError(f"--terrain-gpkg not found: {selection.terrain_gpkg}")
+
     if select_only:
         log.info("record=%s loading scored cache", record.slug)
         candidates = load_scored_candidates(slug_path)
@@ -178,6 +191,13 @@ def build_record(
         if terrain is not None
         else approx_cell_ground_z(grid, mission_cells, candidates)
     )
+
+    if terrain is not None:
+        # Per-frame AGL = camera altitude - DTM under the camera. Feeds the selector's
+        # GSD-consistency floor and is a useful diagnostic column in the audit CSV.
+        candidates["agl_m"] = candidates["altamsl"].to_numpy(float) - terrain.elevation_at(
+            candidates["easting"].to_numpy(float), candidates["northing"].to_numpy(float)
+        )
 
     candidates = select_keyframes(candidates, footprints, grid, selection)
     view_counts = compute_view_counts(candidates, footprints)

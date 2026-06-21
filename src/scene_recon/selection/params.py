@@ -19,9 +19,42 @@ MAX_MOTION_GAP_M = 60.0
 # the one open dial; lower it once the first end-to-end ODM run sets the ceiling.
 MAX_KEYFRAMES = 15000
 
-# Stage-1 overlap spacing: keep the next frame once its footprint Jaccard with the
-# last kept frame drops to <= this. 0.5 ~= high overlap (master-plan probe value).
-OVERLAP_JACCARD_TARGET = 0.5
+# Stage-1 keyframe spacing: keep the next frame once the camera has moved this many
+# metres from the last kept frame. This is the *baseline* between consecutive
+# keyframes and is what triangulation actually needs -- at a survey depth D the
+# baseline/depth ratio is spacing/D, and SfM wants ~0.05-0.15 (Snavely/Goesele view
+# selection explicitly discards tiny-baseline pairs). 8 m over a ~80 m AGL survey
+# gives b/d ~= 0.1 and ~70-80% frame overlap.
+#
+# Why distance and not footprint-Jaccard: a Jaccard trigger measured the footprint
+# polygon, which at oblique pitch + DTM ray-march swings ~80x faster than the camera
+# (sub-degree attitude noise -> tens of metres of footprint jitter). It fired on
+# noise, not motion, and piled up bursts of ~0.2 m-apart near-duplicate frames with
+# zero parallax -> degenerate triangulation -> sparse cloud -> garbage ortho. Camera
+# position is GPS-stable and not orientation-amplified, so distance is the robust
+# control signal. Validated on 0088: the old gate kept 1592 consecutive frames at
+# b/d 0.003 (100% below the degenerate-triangulation line).
+KEYFRAME_SPACING_M = 8.0
+
+# GSD-consistency floor (Goesele 2007 view selection: keep matched views within a
+# small resolution ratio, ~1<=r<2). GSD scales with AGL, so we drop frames flying
+# lower than the flight median AGL by more than this ratio. Kills near-ground frames
+# whose sub-cm GSD poisons ODM's DSM sizing (a 1 cm DSM over a 410 m site -> OOM)
+# without trimming legitimate altitude variation. Self-calibrating to the flight's
+# own median; a large value disables the gate (floor -> 0). Acts on the per-frame
+# agl_m column (build.py samples it from the DTM); a footprint-area proxy was tried
+# and rejected -- pitched low frames see distant ground, so their footprint is near
+# median and the real sub-cm-GSD outliers slip through.
+GSD_RATIO_MAX = 3.0
+
+# Over-coverage cull (ORB-SLAM "survival of the fittest" / COLMAP redundant-image
+# pruning): drop a keyframe when every cell in its footprint still has > this many
+# views from other keepers, worst-quality-first. Tames hover/orbit redundancy
+# (0088 hit 45 views/cell) without opening holes. 0 disables.
+# ponytail: coverage-count only, ignores parallax — a wide-baseline frame can be
+# culled if its cells are otherwise saturated. Upgrade path: skip culling a frame
+# that uniquely raises an under-target cell's convergence angle.
+MAX_VIEWS_PER_CELL = 0
 
 TARGET_VIEWS_PER_CELL = 5
 # Parallax/convergence target (verification metric, not an objective).
@@ -53,7 +86,9 @@ class SelectionParams:
     terrain_margin_m: float = TERRAIN_MARGIN_M
     min_altitude_m: float = MIN_ALTITUDE_M
     ground_trim_rise_m: float = GROUND_TRIM_RISE_M
-    overlap_jaccard_target: float = OVERLAP_JACCARD_TARGET
+    keyframe_spacing_m: float = KEYFRAME_SPACING_M
+    gsd_ratio_max: float = GSD_RATIO_MAX
+    max_views_per_cell: int = MAX_VIEWS_PER_CELL
     cluster_radius_m: float = CLUSTER_RADIUS_M
     coverage_warn_m: float = COVERAGE_WARN_M
     max_motion_gap_m: float = MAX_MOTION_GAP_M
