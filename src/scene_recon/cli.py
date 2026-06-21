@@ -237,7 +237,7 @@ def resolve_run_cmd(
 def prepare_odm_cmd(record_path: str, run_ts: str | None, data_root: Path | None) -> None:
     """Write cameras.json and odm_options.json for an existing run."""
     from scene_recon.intrinsics import write_cameras_json
-    from scene_recon.odm import write_odm_options
+    from scene_recon.odm import recommend_matcher_neighbors, write_odm_options
 
     path = _resolve_record_path(record_path, _data_root_from_env(data_root))
     record = Record.from_path(path)
@@ -249,7 +249,15 @@ def prepare_odm_cmd(record_path: str, run_ts: str | None, data_root: Path | None
 
     cameras_path = odm_input / "cameras.json"
     write_cameras_json(record, cameras_path)
-    write_odm_options(odm_input, cameras_path=cameras_path)
+    # Recover keyframe XY from the exported geo.txt (lines: name E N Z, after a header).
+    geo = odm_input / "geo.txt"
+    xy = [
+        (float(p[1]), float(p[2]))
+        for p in (ln.split() for ln in geo.read_text().splitlines()[2:])
+        if len(p) >= 3
+    ]
+    k = recommend_matcher_neighbors([e for e, _ in xy], [n for _, n in xy]) if xy else 0
+    write_odm_options(odm_input, cameras_path=cameras_path, matcher_neighbors=k)
     click.echo(cameras_path)
 
 

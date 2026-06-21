@@ -20,21 +20,28 @@ MAX_MOTION_GAP_M = 60.0
 MAX_KEYFRAMES = 15000
 
 # Stage-1 keyframe spacing: keep the next frame once the camera has moved this many
-# metres from the last kept frame. This is the *baseline* between consecutive
-# keyframes and is what triangulation actually needs -- at a survey depth D the
-# baseline/depth ratio is spacing/D, and SfM wants ~0.05-0.15 (Snavely/Goesele view
-# selection explicitly discards tiny-baseline pairs). 8 m over a ~80 m AGL survey
-# gives b/d ~= 0.1 and ~70-80% frame overlap.
+# metres from the last kept frame. This is the *baseline* between consecutive keyframes
+# and is what triangulation actually needs -- at survey depth D the baseline/depth ratio
+# is spacing/D, and SfM wants ~0.05-0.15 (Snavely/Goesele discard tiny-baseline pairs).
 #
-# Why distance and not footprint-Jaccard: a Jaccard trigger measured the footprint
-# polygon, which at oblique pitch + DTM ray-march swings ~80x faster than the camera
-# (sub-degree attitude noise -> tens of metres of footprint jitter). It fired on
-# noise, not motion, and piled up bursts of ~0.2 m-apart near-duplicate frames with
-# zero parallax -> degenerate triangulation -> sparse cloud -> garbage ortho. Camera
-# position is GPS-stable and not orientation-amplified, so distance is the robust
-# control signal. Validated on 0088: the old gate kept 1592 consecutive frames at
-# b/d 0.003 (100% below the degenerate-triangulation line).
-KEYFRAME_SPACING_M = 8.0
+# 4 m is the empirical optimum on 0088 (~80 m AGL): it yields 475 keyframes whose nearest
+# neighbour is ~4 m and 16th-nearest (the --matcher-neighbors 16 reach) is ~33 m, and
+# that run is our best ODM result -- 33.5 ha mapped, 68k sparse points, track length 7.3,
+# 89% of core cells at >=3 views. Pushing coverage further is a spacing knob, not a
+# separate objective: 3 m -> 624 frames / 91% but a tighter 25 m matcher reach.
+#
+# Do NOT add a per-cell view-count cull on top: tested at 943 frames (target 3 views,
+# incidence-bounded core) it packed near-duplicates 0.42 m apart, collapsed the matcher
+# reach 33 m -> 7.7 m, and regressed the ortho to 25.2 ha / 60k points / track length 16.5
+# (deep-but-narrow degenerate triangulation). View count is parallax-blind; spacing is the
+# control signal that protects the baseline. See git history for the reverted cull.
+#
+# Why distance and not footprint-Jaccard: a Jaccard trigger measured the footprint polygon,
+# which at oblique pitch + DTM ray-march swings ~80x faster than the camera (sub-degree
+# attitude noise -> tens of metres of footprint jitter). It fired on noise, not motion, and
+# piled up bursts of ~0.2 m-apart near-duplicates with zero parallax. Camera position is
+# GPS-stable and not orientation-amplified, so distance is the robust control signal.
+KEYFRAME_SPACING_M = 4.0
 
 # GSD-consistency floor (Goesele 2007 view selection: keep matched views within a
 # small resolution ratio, ~1<=r<2). GSD scales with AGL, so we drop frames flying

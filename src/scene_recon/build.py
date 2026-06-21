@@ -11,7 +11,7 @@ from scene_recon.export import write_build_manifest, write_geo_txt
 from scene_recon.geometry.footprint import compute_footprints
 from scene_recon.geometry.terrain import TerrainModel
 from scene_recon.intrinsics import write_cameras_json
-from scene_recon.odm import write_odm_options
+from scene_recon.odm import MATCHER_REACH_M, recommend_matcher_neighbors, write_odm_options
 from scene_recon.selection import (
     DEFAULT_SELECTION_PARAMS,
     SELECTION_POLICY,
@@ -115,7 +115,18 @@ def export_run(
     write_geo_txt(selected, odm_input / "geo.txt")
     cameras_path = odm_input / "cameras.json"
     write_cameras_json(record, cameras_path)
-    write_odm_options(odm_input, cameras_path=cameras_path)
+    matcher_neighbors = recommend_matcher_neighbors(
+        selected["easting"], selected["northing"]
+    )
+    log.info(
+        "odm matcher-neighbors auto = %d (holds ~%.0f m baseline reach for %d keyframes)",
+        matcher_neighbors,
+        MATCHER_REACH_M,
+        len(selected),
+    )
+    write_odm_options(
+        odm_input, cameras_path=cameras_path, matcher_neighbors=matcher_neighbors
+    )
     write_build_manifest(
         record,
         candidates,
