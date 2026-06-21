@@ -69,6 +69,20 @@ class TerrainModel:
             datum_offset_m=float(datum_offset_m),
         )
 
+    def elevation_bounds(self) -> tuple[float, float]:
+        """Min/max real elevation in this terrain window (datum-corrected).
+
+        Used to bound ray-marching: a ray can only intersect terrain inside this
+        band, so we march the [z_hi, z_lo] bracket instead of the full range.
+        Returns (-inf, inf) if the window is all-nodata (disables the optimization).
+        """
+        a = self.array
+        valid = np.isfinite(a) & (a != self.nodata)
+        if not valid.any():
+            return (float("-inf"), float("inf"))
+        v = a[valid]
+        return (float(v.min()) + self.datum_offset_m, float(v.max()) + self.datum_offset_m)
+
     def elevation_at(self, easting, northing) -> np.ndarray:
         e = np.asarray(easting, dtype=float)
         n = np.asarray(northing, dtype=float)

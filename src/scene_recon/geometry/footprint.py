@@ -66,11 +66,12 @@ def ground_footprint(
     max_range_m: float = 2000.0,
     step_m: float = 10.0,
     min_valid_ray_frac: float = 0.25,
+    z_bounds: tuple[float, float] | None = None,
 ) -> GroundFootprint:
     pixels = camera.sample_grid(ray_grid)
     origins, dirs = world_rays(camera, pose, pixels)
     hits, valid = raymarch_first_hit(
-        origins, dirs, terrain, step_m=step_m, max_range_m=max_range_m
+        origins, dirs, terrain, step_m=step_m, max_range_m=max_range_m, z_bounds=z_bounds
     )
     valid_frac = float(valid.mean()) if valid.size else 0.0
     ground = hits[valid]
@@ -119,6 +120,7 @@ def compute_footprints(
 ) -> dict[int, GroundFootprint]:
     """Ray-march every candidate once. Drives both selection scoring and the
     mission-region coverage denominator."""
+    z_bounds = terrain.elevation_bounds()  # data-driven march range (computed once)
     rows = candidates.iterrows()
     if show_progress:
         rows = tqdm(rows, total=len(candidates), desc="Footprints", unit="frame")
@@ -135,5 +137,6 @@ def compute_footprints(
             max_range_m=max_range_m,
             step_m=step_m,
             min_valid_ray_frac=min_valid_ray_frac,
+            z_bounds=z_bounds,
         )
     return out
