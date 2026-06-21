@@ -86,8 +86,14 @@ class TerrainModel:
     def elevation_at(self, easting, northing) -> np.ndarray:
         e = np.asarray(easting, dtype=float)
         n = np.asarray(northing, dtype=float)
-        shape = np.broadcast_shapes(e.shape, n.shape)
-        ef, nf = (a.ravel() for a in np.broadcast_arrays(e, n))
+        # Hot path (ray-marching): two equal-shape 1-D arrays, so skip the
+        # broadcast_shapes/broadcast_arrays machinery entirely.
+        if e.shape == n.shape:
+            shape = e.shape
+            ef, nf = e.ravel(), n.ravel()
+        else:
+            shape = np.broadcast_shapes(e.shape, n.shape)
+            ef, nf = (a.ravel() for a in np.broadcast_arrays(e, n))
 
         inv = ~self.transform
         col = inv.a * ef + inv.b * nf + inv.c
@@ -98,8 +104,13 @@ class TerrainModel:
 
         # ponytail: bilinear needs a 2x2 neighborhood, so arrays must be >=2x2.
         # Clamping col0/row0 to W-2/H-2 keeps the last row/col exact (frac->1).
-        col0 = np.clip(np.floor(col).astype(int), 0, w - 2)
-        row0 = np.clip(np.floor(row).astype(int), 0, h - 2)
+        # maximum/minimum ufuncs are cheaper than np.clip (no per-call dtype limits).
+        col0 = np.floor(col).astype(np.intp)
+        row0 = np.floor(row).astype(np.intp)
+        np.maximum(col0, 0, out=col0)
+        np.minimum(col0, w - 2, out=col0)
+        np.maximum(row0, 0, out=row0)
+        np.minimum(row0, h - 2, out=row0)
         fx = col - col0
         fy = row - row0
 
