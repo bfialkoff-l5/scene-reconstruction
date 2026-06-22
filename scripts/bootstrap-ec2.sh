@@ -41,6 +41,13 @@ else
   echo "No nvidia-smi — CPU-only ODM will be very slow."
 fi
 
+echo "==> /data (the EC2 DATA_ROOT) owned by you"
+# The 300GB EBS root mounts at /, so /data is just a dir that starts out root-owned.
+# Hand it to the login user so non-sudo aws/fetch-data.sh and the builder container (which
+# runs as your uid) can write. Never run the data scripts with sudo -- root has no SSO profile.
+sudo mkdir -p /data
+sudo chown "$(id -u):$(id -g)" /data
+
 echo "==> AWS SSO config (~/.aws/config)"
 # The repo owns this box's AWS config so setup is reproducible -- no interactive
 # `aws configure sso`. The one subtlety that bit us: sso_region is where IAM Identity
