@@ -28,7 +28,7 @@ laptop). The builder auto-discovers files inside a slug folder; you only ever pa
 | What | On-disk path | Source on S3 |
 |------|--------------|--------------|
 | Raw flight (video, intrinsics, poses) | `$DATA_ROOT/raw/0088_20260122_eitan_1/` | `s3://line5-localization-evaluation-data-939103584914-eu-north-1-an/Flight logs/Flight 000/0088_20260122_eitan_1/` |
-| DTM (terrain, required by build) | `$DATA_ROOT/geo-resources/DSM/israelDTM.gpkg` | `s3://l5-ll-maps/dtm/israelDTM.gpkg` |
+| DTM (terrain, required by build) | `$DATA_ROOT/geo-resources/DSM/israelDTM.gpkg` | `s3://line5-localization-evaluation-data-939103584914-eu-north-1-an/israelDTM.gpkg` |
 | Reference orthophoto (overlay/QA) | `$DATA_ROOT/geo-resources/orthophoto/Eitan.gpkg` | `s3://line5-localization-evaluation-data-939103584914-eu-north-1-an/Maps/Eitan.gpkg` |
 
 The builder needs only three files from the raw folder: `AvatarS0093.mp4`,
@@ -53,27 +53,16 @@ Note the two-region quirk baked into that config: `sso_region = us-east-1` (wher
 Identity Center lives) but the profile `region = eu-north-1` (where the S3 data lives).
 Setting `sso_region` to eu-north-1 makes login fail at `RegisterClient`.
 
-Then pull the essentials (skip the unused 1.1 GB G-stream video):
+Then pull everything (raw flight without the unused 1.1 GB G-stream, DTM, reference ortho)
+into the layout the builder expects. `DATA_ROOT` and `AWS_PROFILE` come from `.env`:
 
 ```bash
-export DATA_ROOT=/data
-B="s3://line5-localization-evaluation-data-939103584914-eu-north-1-an"
-P="--profile bfialkoff"
-
-# raw flight (just what the builder needs)
-mkdir -p "$DATA_ROOT/raw/0088_20260122_eitan_1/_derived"
-aws $P s3 cp "$B/Flight logs/Flight 000/0088_20260122_eitan_1/AvatarS0093.mp4"            "$DATA_ROOT/raw/0088_20260122_eitan_1/"
-aws $P s3 cp "$B/Flight logs/Flight 000/0088_20260122_eitan_1/intrinsicK.csv"             "$DATA_ROOT/raw/0088_20260122_eitan_1/"
-aws $P s3 cp "$B/Flight logs/Flight 000/0088_20260122_eitan_1/_derived/gt_AvatarS0093.csv" "$DATA_ROOT/raw/0088_20260122_eitan_1/_derived/"
-
-# geo resources
-mkdir -p "$DATA_ROOT/geo-resources/DSM" "$DATA_ROOT/geo-resources/orthophoto"
-aws $P s3 cp s3://l5-ll-maps/dtm/israelDTM.gpkg "$DATA_ROOT/geo-resources/DSM/"
-aws $P s3 cp "$B/Maps/Eitan.gpkg"               "$DATA_ROOT/geo-resources/orthophoto/"
+./scripts/fetch-data.sh 0088_20260122_eitan_1 Eitan.gpkg
 ```
 
-(The DTM only lives in `s3://l5-ll-maps/`; consider copying it into the eitan bucket so all
-inputs share one bucket.)
+All inputs live in the one bucket
+`line5-localization-evaluation-data-939103584914-eu-north-1-an` (raw under `Flight logs/
+Flight 000/<slug>/`, orthos under `Maps/`, DTM at the root).
 
 ## Run it
 
