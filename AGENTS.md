@@ -42,12 +42,16 @@ Outputs land under `$DATA_ROOT/odm-results/{slug}/runs/{timestamp}/`. The orthop
 ## Fetch the data (fresh box)
 
 This account has **no EC2 IAM role** (the `ec2-vcpu-limiter` Lambda blocks role attach), so
-authenticate with SSO exactly like the laptop:
+authenticate with SSO. `scripts/bootstrap-ec2.sh` already wrote `~/.aws/config` (no
+`aws configure sso` needed), so the only human step is approving the browser code:
 
 ```bash
-aws configure sso --profile bfialkoff   # one-time: SSO start URL https://d-9066027ed5.awsapps.com/start, region eu-north-1
-aws sso login --profile bfialkoff --no-browser
+aws sso login --profile bfialkoff --no-browser   # open the printed URL, approve, done
 ```
+
+Note the two-region quirk baked into that config: `sso_region = us-east-1` (where IAM
+Identity Center lives) but the profile `region = eu-north-1` (where the S3 data lives).
+Setting `sso_region` to eu-north-1 makes login fail at `RegisterClient`.
 
 Then pull the essentials (skip the unused 1.1 GB G-stream video):
 

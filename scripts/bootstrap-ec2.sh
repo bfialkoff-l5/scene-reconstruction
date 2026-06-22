@@ -41,8 +41,34 @@ else
   echo "No nvidia-smi — CPU-only ODM will be very slow."
 fi
 
+echo "==> AWS SSO config (~/.aws/config)"
+# The repo owns this box's AWS config so setup is reproducible -- no interactive
+# `aws configure sso`. The one subtlety that bit us: sso_region is where IAM Identity
+# Center lives (us-east-1), NOT where our data/S3 lives (the profile's region, eu-north-1).
+# Setting sso_region to eu-north-1 makes `aws sso login` fail at RegisterClient with
+# InvalidRequestException. We write the file authoritatively (backing up any existing one),
+# since this is a single-purpose disposable box.
+AWS_CFG="$HOME/.aws/config"
+mkdir -p "$HOME/.aws"
+[ -f "$AWS_CFG" ] && cp "$AWS_CFG" "$AWS_CFG.bak"
+cat > "$AWS_CFG" <<'EOF'
+[sso-session okta-sso]
+sso_start_url = https://d-9066027ed5.awsapps.com/start
+sso_region = us-east-1
+sso_registration_scopes = sso:account:access
+
+[profile bfialkoff]
+sso_session = okta-sso
+sso_account_id = 939103584914
+sso_role_name = PowerUserAccess
+region = eu-north-1
+output = json
+EOF
+echo "wrote $AWS_CFG (backup at $AWS_CFG.bak if one existed)"
+
 echo ""
 echo "Done. Next:"
+echo "  aws sso login --profile bfialkoff --no-browser   # only human step: approve in browser"
 echo "  export DATA_ROOT=/data"
 echo "  docker compose build"
 echo "  ./scripts/build.sh <slug>"
