@@ -18,7 +18,10 @@ services:
     working_dir: /app
 
   odm:
-    image: opendronemap/odm:3.5.1
+    # GPU build: CUDA-accelerated SIFT (OpenSfM) + dense (OpenMVS). Requires a CUDA GPU
+    # on the host + nvidia-container-toolkit. There is no version-pinned gpu tag; `gpu`
+    # is the rolling GPU image. The CPU equivalent is opendronemap/odm:3.5.1.
+    image: opendronemap/odm:gpu
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     gpus: all
     volumes:
