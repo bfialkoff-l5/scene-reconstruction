@@ -14,6 +14,7 @@ from scene_recon.intrinsics import write_cameras_json
 from scene_recon.odm import MATCHER_REACH_M, recommend_matcher_neighbors, write_odm_options
 from scene_recon.selection import (
     DEFAULT_SELECTION_PARAMS,
+    FootprintCache,
     SELECTION_POLICY,
     GroundGrid,
     SelectionParams,
@@ -43,6 +44,56 @@ def _selection_constants(params: SelectionParams) -> dict:
         "quality_weight_features": QUALITY_WEIGHT_FEATURES,
         "quality_weight_sharpness": QUALITY_WEIGHT_SHARPNESS,
     }
+
+
+def _write_matcher_profile(
+    odm_input: Path,
+    selected: pd.DataFrame,
+    footprints: "FootprintCache | None",
+    cameras_path: Path,
+) -> int:
+    """Derive the matcher profile from geometric co-visibility and write it for run_odm.sh.
+
+    Co-visibility (which keyframes actually see the same ground) generalises across flight
+    patterns where a fixed GPS-neighbour count cannot: it adds the cross-track / loop-
+    closure candidate pairs that a tight along-track k-NN silently drops. Falls back to the
+    legacy fixed-reach neighbour heuristic when footprints are unavailable.
+
+    Returns the matcher_neighbors written (for logging).
+    """
+    write_odm_options(odm_input, cameras_path=cameras_path, matcher_neighbors=0)
+    if footprints:
+        from scene_recon.matching import StockKnobsBackend, covisibility_from_footprints
+
+        graph = covisibility_from_footprints(footprints, selected)
+        if graph.edges:
+            backend = StockKnobsBackend()
+            profile = backend.recommend(graph)
+            backend.apply(odm_input, profile, graph)
+            log.info(
+                "matcher profile (co-visibility): neighbors=%d distance=%.1fm "
+                "(%d frames, %d covis edges, %.0f%% cross-track)",
+                profile.gps_neighbors,
+                profile.gps_distance_m,
+                len(graph.frames),
+                len(graph.edges),
+                100 * graph.summary()["cross_track_frac"],
+            )
+            return profile.gps_neighbors
+        log.warning("co-visibility graph empty; falling back to fixed-reach neighbours")
+
+    matcher_neighbors = recommend_matcher_neighbors(
+        selected["easting"], selected["northing"]
+    )
+    log.info(
+        "matcher neighbors (fixed ~%.0f m reach fallback) = %d",
+        MATCHER_REACH_M,
+        matcher_neighbors,
+    )
+    write_odm_options(
+        odm_input, cameras_path=cameras_path, matcher_neighbors=matcher_neighbors
+    )
+    return matcher_neighbors
 
 
 def _mission_bbox(candidates: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -102,6 +153,7 @@ def export_run(
     run_dir_path: Path,
     run_ts: str,
     params: SelectionParams,
+    footprints: "FootprintCache | None" = None,
 ) -> None:
     selected = selected_candidates(candidates)
     log.info("selected %d / %d keyframes", len(selected), len(candidates))
@@ -115,18 +167,10 @@ def export_run(
     write_geo_txt(selected, odm_input / "geo.txt")
     cameras_path = odm_input / "cameras.json"
     write_cameras_json(record, cameras_path)
-    matcher_neighbors = recommend_matcher_neighbors(
-        selected["easting"], selected["northing"]
+    matcher_neighbors = _write_matcher_profile(
+        odm_input, selected, footprints, cameras_path
     )
-    log.info(
-        "odm matcher-neighbors auto = %d (holds ~%.0f m baseline reach for %d keyframes)",
-        matcher_neighbors,
-        MATCHER_REACH_M,
-        len(selected),
-    )
-    write_odm_options(
-        odm_input, cameras_path=cameras_path, matcher_neighbors=matcher_neighbors
-    )
+    log.info("odm matcher-neighbors = %d", matcher_neighbors)
     write_build_manifest(
         record,
         candidates,
@@ -248,5 +292,5 @@ def build_record(
     if not health.passed:
         raise SelectionFailed(health)
 
-    export_run(record, candidates, run_path, run_ts, selection)
+    export_run(record, candidates, run_path, run_ts, selection, footprints=footprints)
     return run_path

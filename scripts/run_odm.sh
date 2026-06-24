@@ -64,21 +64,31 @@ if [[ ! " ${ODM_ARGS[*]} " == *" --matcher-neighbors "* ]]; then
   MN="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('matcher_neighbors',0))" "$OPTS_HOST" 2>/dev/null || echo 0)"
   if [[ -n "$MN" && "$MN" != "0" ]]; then
     ODM_ARGS+=(--matcher-neighbors "$MN")
-    echo "auto matcher-neighbors: $MN (holds fixed matching baseline reach for this selection)"
+    echo "auto matcher-neighbors: $MN (co-visibility-derived; covers cross-track / loop-closure pairs)"
   else
     echo "WARN: no auto matcher-neighbors (odm_options.json missing/0); re-run build to regenerate" >&2
   fi
 fi
 
-# Bind our lab calibration (intrinsicK.csv -> cameras.json) and stop ODM from
-# self-calibrating. Without this ODM defaults to a 0.85 focal prior on our
-# EXIF-less frames and the bundle adjust diverges (principal point off-image,
-# OpenMVS fuses 0 points). cameras.json is keyed to ODM's detected camera id so
-# the override actually binds; see Camera.camera_id().
+# Bind our lab calibration (intrinsicK.csv -> cameras.json). Without a seed ODM defaults
+# to a 0.85 focal prior on our EXIF-less frames and the bundle adjust diverges (principal
+# point off-image, OpenMVS fuses 0 points). cameras.json is keyed to ODM's detected camera
+# id so the override binds; see Camera.camera_id().
+#
+# By default the calibration is *locked* (--use-fixed-camera-params). Set OPTIMIZE_CAMERAS=1
+# to instead use cameras.json only as the BA *initial guess* and let bundle adjustment
+# refine the intrinsics -- worth doing now that strong cross-track matching constrains the
+# solve (the historic 0-point divergence was a weak-matching symptom). Watch the point
+# count and opensfm/stats residuals_v2 to confirm it converged.
 CAMERAS_JSON="$CONTAINER_PROJECT_PATH/$ODM_DATASET/cameras.json"
+CAMERA_ARGS=(--cameras "$CAMERAS_JSON")
+if [[ "${OPTIMIZE_CAMERAS:-0}" == "1" ]]; then
+  echo "OPTIMIZE_CAMERAS=1: seeding cameras.json, letting bundle adjustment refine intrinsics (no --use-fixed-camera-params)"
+else
+  CAMERA_ARGS+=(--use-fixed-camera-params)
+fi
 docker compose run --rm odm \
   --project-path "$CONTAINER_PROJECT_PATH" \
   "$ODM_DATASET" \
-  --cameras "$CAMERAS_JSON" \
-  --use-fixed-camera-params \
+  "${CAMERA_ARGS[@]}" \
   "${ODM_ARGS[@]}"
