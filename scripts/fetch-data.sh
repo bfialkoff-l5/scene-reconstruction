@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pull a dataset onto the box into the layout the builder expects. Run after `aws sso login`.
+# Pull a dataset onto the box into the layout the builder expects. Needs S3 creds: the box's
+# instance role (default) or, if launched without one, `aws sso login` first.
 # Usage: ./scripts/fetch-data.sh <slug> <map.gpkg>     e.g. ./scripts/fetch-data.sh 0088_20260122_eitan_1 Eitan.gpkg
 set -euo pipefail
 
@@ -10,7 +11,8 @@ cd "$ROOT"
 SLUG="${1:?usage: $0 <slug> <map.gpkg>}"
 MAP="${2:?usage: $0 <slug> <map.gpkg>}"
 : "${DATA_ROOT:?set DATA_ROOT in .env}"
-: "${AWS_PROFILE:?set AWS_PROFILE in .env}"   # exported above, so aws CLI picks it up
+# AWS_PROFILE is optional: on a box launched with the S3 instance role, creds come from IMDS
+# and no profile is set. Locally, .env exports AWS_PROFILE and the CLI picks it up.
 
 BUCKET="s3://line5-localization-evaluation-data-939103584914-eu-north-1-an"
 FLIGHT_PREFIX="Flight logs/Flight 000"        # slug folders live under this prefix in-bucket

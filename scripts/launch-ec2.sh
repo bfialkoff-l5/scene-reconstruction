@@ -22,6 +22,10 @@ NAME="${NAME:-scene-recon-eitan}"
 # betzalel's budget is 16 vCPU / 1 GPU -> g6.4xlarge fits exactly, with zero headroom, so
 # don't run any other owner=betzalel instance at the same time.
 OWNER="${OWNER:-betzalel}"
+# Per-bucket S3 instance role (scoped read-write to the eval-data bucket only). PassRole is
+# granted to power users, so we attach it ourselves at launch -> the box reads/writes S3 via
+# IMDS with no `aws sso login`. Set IAM_PROFILE="" to launch without it (fall back to SSO).
+IAM_PROFILE="${IAM_PROFILE:-l5-localization-evaluation-data-rw}"
 IID_FILE="$(cd "$(dirname "$0")/.." && pwd)/.ec2-instance-id"
 
 aws() { command aws --profile "$PROFILE" --region "$REGION" "$@"; }
@@ -29,6 +33,7 @@ aws() { command aws --profile "$PROFILE" --region "$REGION" "$@"; }
 # Default VPC: omitting --subnet-id lets AWS pick a default subnet that auto-assigns a
 # public IP. SG must live in that default VPC (it does).
 echo "Launching $INSTANCE_TYPE ($AMI, ${DISK_GB}GB) in $REGION ..."
+iam_arg=(); [ -n "$IAM_PROFILE" ] && iam_arg=(--iam-instance-profile "Name=$IAM_PROFILE")
 IID=$(aws ec2 run-instances \
   --image-id "$AMI" \
   --instance-type "$INSTANCE_TYPE" \
@@ -36,6 +41,7 @@ IID=$(aws ec2 run-instances \
   --security-group-ids "$SG_ID" \
   --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$DISK_GB,VolumeType=gp3}" \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME},{Key=owner,Value=$OWNER}]" \
+  "${iam_arg[@]}" \
   --query 'Instances[0].InstanceId' --output text)
 echo "$IID" > "$IID_FILE"
 echo "instance: $IID  (id saved to $IID_FILE)"
@@ -77,9 +83,10 @@ Up. Public IP: $IP   (ssh alias: $ALIAS)
      git clone git@github.com:bfialkoff-l5/scene-reconstruction.git
      cd scene-reconstruction && ./scripts/bootstrap-ec2.sh   # near no-op on the DLAMI
 
-3) Let the box read S3 (no IAM role attached -> use your SSO, same flow as your laptop):
-     aws configure sso --profile bfialkoff   # one-time; then: aws sso login --profile bfialkoff --no-browser
-     # then aws s3 cp s3://line5-localization-evaluation-data-939103584914-eu-north-1-an/... /data/...
+3) S3 access: the box has the instance role ${IAM_PROFILE:-(none — IAM_PROFILE was empty)}
+   attached, so \`aws s3 ...\` on the eval-data bucket just works (creds via IMDS, no login).
+   Pull the dataset:  ./scripts/fetch-data.sh 0088_20260122_eitan_1 Eitan.gpkg
+   (If you launched with IAM_PROFILE="", fall back to: aws sso login --profile bfialkoff --no-browser)
 
 4) Terminate when done (STOPS billing -- the GPU box is ~\$1-2/hr):
      ./scripts/terminate-ec2.sh
