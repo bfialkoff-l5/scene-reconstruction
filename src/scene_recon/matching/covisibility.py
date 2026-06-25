@@ -11,7 +11,7 @@ Pure numpy (no scipy): O(n^2) over keyframes (hundreds), trivially fast.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -43,6 +43,9 @@ class CoVisGraph:
 
     frames: list[int]
     edges: list[CoVisEdge]
+    # frame -> (easting, northing); used to size GPS-k-NN matcher reach (see
+    # `gps_rank_requirement`). Empty when positions were not supplied.
+    positions: dict[int, tuple[float, float]] = field(default_factory=dict)
 
     def _rank(self) -> dict[int, int]:
         return {f: r for r, f in enumerate(self.frames)}
@@ -54,6 +57,50 @@ class CoVisGraph:
             deg[e.j] += 1
         return deg
 
+    def covisible_partners(self) -> dict[int, set[int]]:
+        partners: dict[int, set[int]] = {f: set() for f in self.frames}
+        for e in self.edges:
+            partners[e.i].add(e.j)
+            partners[e.j].add(e.i)
+        return partners
+
+    def gps_rank_requirement(self, *, per_frame_percentile: float = 90.0) -> np.ndarray:
+        """Per-frame *GPS k-NN rank* needed to reach its co-visible partners.
+
+        ODM's matcher only compares each image to its `matcher_neighbors` GPS-nearest
+        images. A cross-track partner that is the 40th-closest frame by GPS is only matched
+        if `matcher_neighbors >= 40`, *regardless of how strongly they co-see ground*. So
+        for each frame we rank all other frames by GPS distance and look up where its
+        co-visible partners land; `needed[i]` is the per-frame percentile of those ranks
+        (p90 by default -> ignore the single farthest straggler, keep the bulk reachable).
+
+        Returns an array over frames with a co-visible partner. Empty if no positions.
+        """
+        if not self.positions:
+            return np.array([], dtype=float)
+        frames = self.frames
+        idx = {f: i for i, f in enumerate(frames)}
+        xy = np.array([self.positions[f] for f in frames], dtype=float)  # (N, 2)
+        # Full pairwise GPS distances: N is in the hundreds, so O(N^2) is trivial.
+        diff = xy[:, None, :] - xy[None, :, :]
+        dist = np.hypot(diff[..., 0], diff[..., 1])  # (N, N)
+        # rank[i, j] = position of frame j in i's distance ordering (0 == self).
+        order = np.argsort(dist, axis=1, kind="stable")
+        rank = np.empty_like(order)
+        ar = np.arange(order.shape[1])
+        for i in range(order.shape[0]):
+            rank[i, order[i]] = ar
+        partners = self.covisible_partners()
+        needed: list[float] = []
+        for f in frames:
+            ps = partners[f]
+            if not ps:
+                continue
+            i = idx[f]
+            partner_ranks = rank[i, [idx[p] for p in ps]]
+            needed.append(float(np.percentile(partner_ranks, per_frame_percentile)))
+        return np.array(needed, dtype=float)
+
     def summary(self, *, cross_track_rank_gap: int = 16) -> dict:
         """Topology stats that diagnose the matching profile."""
         rank = self._rank()
@@ -63,6 +110,7 @@ class CoVisGraph:
             [abs(rank[e.i] - rank[e.j]) for e in self.edges], dtype=int
         )
         cross = int((gaps > cross_track_rank_gap).sum())
+        needed = self.gps_rank_requirement()
         return {
             "n_frames": len(self.frames),
             "n_edges": len(self.edges),
@@ -74,6 +122,9 @@ class CoVisGraph:
             "reach_p50_m": float(np.percentile(dists, 50)) if dists.size else 0.0,
             "reach_p95_m": float(np.percentile(dists, 95)) if dists.size else 0.0,
             "reach_max_m": float(dists.max()) if dists.size else 0.0,
+            "gps_rank_p50": float(np.percentile(needed, 50)) if needed.size else 0.0,
+            "gps_rank_p95": float(np.percentile(needed, 95)) if needed.size else 0.0,
+            "gps_rank_max": float(needed.max()) if needed.size else 0.0,
         }
 
 
@@ -141,7 +192,8 @@ def build_covisibility(
 
     if pair_budget is not None:
         edges = _apply_pair_budget(frames, edges, pair_budget)
-    return CoVisGraph(frames=frames, edges=edges)
+    pos = {f: (float(positions[f][0]), float(positions[f][1])) for f in frames}
+    return CoVisGraph(frames=frames, edges=edges, positions=pos)
 
 
 def _apply_pair_budget(

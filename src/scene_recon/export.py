@@ -17,9 +17,16 @@ def write_geo_txt(selected: pd.DataFrame, output_path: Path) -> None:
     utm_zone = str(selected.iloc[0]["utm_zone"])
     lines = [f"WGS84 UTM {utm_zone}"]
 
+    # NOTE: position only. We deliberately do NOT emit per-image yaw/pitch/roll
+    # orientation priors here. See docs/FINDINGS.md (2026-06-25): ODM's geo.txt
+    # YPR -> compute_opk conversion is lossy for our strapdown/oblique camera
+    # (it assumes a gimballed near-nadir camera), and OpenSfM never uses opk as a
+    # bundle-adjustment rotation prior anyway -- so orientation here cannot fix the
+    # CE90 variance and a wrong convention actively corrupts matching pair selection.
     for frame_number, row in selected.sort_index().iterrows():
         lines.append(
-            f"{frame_filename(int(frame_number))} {row['easting']} {row['northing']} {row['altamsl']}"
+            f"{frame_filename(int(frame_number))} "
+            f"{row['easting']} {row['northing']} {row['altamsl']}"
         )
 
     output_path.write_text("\n".join(lines) + "\n")
