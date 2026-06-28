@@ -84,22 +84,28 @@ Relevant ODM flags (verified against `opendronemap/odm:gpu --help`):
    orientation_prior config override, or revive the parked rotation prior (done right).
    Triangulation + orientation priors is the most promising combo (ties both threads together).
 
-### Experiment plan (ranked; run when resuming)
+### Experiment plan (ranked)
 
-1. **Exp A — brute-force matcher.** `run_variance.sh bruteforce 3 -- --matcher-type bruteforce`
-   Hypothesis: removes the FLANN match-graph lottery → tighter variance, maybe no flips.
-   Likely to help; uncertain it fully eliminates flips (BA/thread residual remains).
+- ~~**Exp A — brute-force matcher.**~~ **DONE** (1/3 good — no change in flip rate; matching is not the cause).
+- ~~**Exp C — triangulation.**~~ **DONE** (0/3 good — worse; needs angles we don't ship → orientation is the missing constraint).
 
-2. **Exp B — full determinism.** `run_variance.sh single 2 -- --matcher-type bruteforce --max-concurrency 1 --no-gpu`
+Remaining / next when resuming:
+
+1. **Exp B — full determinism.** `run_variance.sh single 2 -- --matcher-type bruteforce --max-concurrency 1 --no-gpu`
    Hypothesis: bit-reproducible runs (high confidence). Then check WHICH basin it locks onto.
-   Slow (single-thread). Determinism proof, not a correctness guarantee.
+   Slow (single-thread). Determinism proof, not a correctness guarantee. Still untested.
 
-3. **Exp C — GPS-anchored SfM (best shot at fixing the flip).**
-   `run_variance.sh triangulate 3 -- --sfm-algorithm triangulation`
-   Hypothesis: anchoring structure to the GPS track + vertical prior pins global orientation,
-   killing the flip. Biggest upside for *correctness*. Risk: triangulation wants camera angles
-   and we ship position-only `geo.txt`; if it underperforms, that's evidence the orientation
-   prior is genuinely required.
+2. **Exp E — explicit co-visibility pairs (deterministic candidate set).** A fixed pair list
+   (covis ∪ sequential) handed to OpenSfM removes the GPS k-NN candidate variability entirely
+   and is inherently deterministic. A working implementation already exists as **uncommitted
+   work on `betzalel/improve_keyframe_selection`** (in-container `covis_pairs_shim.py` +
+   `ExplicitPairListBackend`, activated by `EXPLICIT_PAIRS=1`). Candidate to fold into this
+   branch. Tests it against determinism AND may improve cross-track matching.
+
+3. **Orientation constraint (the real correctness fix).** Feed angles into triangulation, an
+   `align_method`/orientation_prior config override, or revive the parked rotation prior
+   (`experiment/rotation-prior`, kept LOCAL). Triangulation + orientation priors is the most
+   promising combo.
 
 4. **Exp D — combine** the winning determinism lever with the winning correctness lever.
 
@@ -115,12 +121,14 @@ Decision logic:
 |---|---|---|---|
 | `main` | `main` | `02b95e8` | clean stable baseline (stock image, position-only geo) |
 | `flip-determinism` | `investigate/flip-determinism` | off `02b95e8` | **this investigation** (config experiments) |
-| `rotation-prior-experiment` | `experiment/rotation-prior` | `6e52ff5` | parked C++ BA rotation prior (submodule `rotation-prior-patch` @ `3b44c559`; transpose bug fixed + C++-unit-tested, but never recovered single-digit CE90) |
-| `betzalel-improve-keyframe-selection` | `betzalel/improve_keyframe_selection` | `02b95e8` | untouched |
-| `betzalel-speedups` | `betzalel/speedups` | `528a7c9` | untouched |
+| `rotation-prior-experiment` | `experiment/rotation-prior` | `6e52ff5` | parked C++ BA rotation prior (submodule `rotation-prior-patch` @ `3b44c559`; transpose bug fixed + C++-unit-tested, but never recovered single-digit CE90). **Kept LOCAL — not pushed; submodule patch only in local module store.** |
+| `betzalel-improve-keyframe-selection` | `betzalel/improve_keyframe_selection` | `02b95e8` (= main) | committed = main, but **uncommitted explicit-co-visibility-pairs experiment** lives here (see Exp E): `covis_pairs_shim.py`, `ExplicitPairListBackend`, `pair_coverage`, `EXPLICIT_PAIRS=1` in run_odm.sh, + tests. Not yet committed. |
+| `betzalel-speedups` | `betzalel/speedups` | `528a7c9` | speedups (footprint/ray-march); on origin |
 
-Nothing pushed; all local and reversible. The rotation-prior root-cause writeup lives at
-`docs/FINDINGS.md` on the `experiment/rotation-prior` branch (dropped from `main` intentionally).
+Local-only (intentionally, won't travel on a fresh clone): the entire `experiment/rotation-prior`
+branch + its submodule patch `3b44c559`, and the uncommitted explicit-pairs work on
+`betzalel/improve_keyframe_selection`. The rotation-prior root-cause writeup lives at
+`docs/FINDINGS.md` on `experiment/rotation-prior` (dropped from `main` intentionally).
 
 ## How to run
 
