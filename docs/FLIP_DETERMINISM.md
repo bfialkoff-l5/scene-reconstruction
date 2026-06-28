@@ -63,6 +63,27 @@ Relevant ODM flags (verified against `opendronemap/odm:gpu --help`):
   anchors to GPS positions+angles (we have positions only → benefit uncertain). `planar` is
   nadir/flat only (poor fit for our oblique camera).
 
+### Results so far (2026-06-28, byte-identical input, stock image)
+
+| config | runs (CE90) | good/total | takeaway |
+|---|---|---|---|
+| FLANN (baseline) | 195.92 / 35.64 / 8.99 / 8.90 | 2/4 | the lottery |
+| `--matcher-type bruteforce` (conc+GPU kept) | 126.83 / 119.35 / 9.09 | 1/3 | **matching is NOT the cause** — same flip rate |
+| `--sfm-algorithm triangulation` | 106.18 / 93.42 / 127.59 | 0/3 | **strictly worse** — no angles to anchor → flips every time |
+
+**Conclusions:**
+1. Brute-force matching does not change the flip rate → the FLANN approximation is not the
+   dominant non-determinism source. It's the GPU-SIFT/parallel feature pipeline + incremental
+   bootstrap + `align_method: auto`.
+2. Triangulation flips 0/3 *because* it relies on GPS **angles** we don't provide (position-only
+   `geo.txt`). This is strong evidence that **orientation is the missing constraint** — i.e. the
+   rotation-prior direction was correct; the cheap config levers can't substitute for it.
+3. So the path splits: (a) test whether `--max-concurrency 1 --no-gpu` even makes runs
+   *deterministic* (it will lock *a* basin, not necessarily the good one); and (b) the real fix
+   is constraining orientation — feed angles into triangulation, use an `align_method`/
+   orientation_prior config override, or revive the parked rotation prior (done right).
+   Triangulation + orientation priors is the most promising combo (ties both threads together).
+
 ### Experiment plan (ranked; run when resuming)
 
 1. **Exp A — brute-force matcher.** `run_variance.sh bruteforce 3 -- --matcher-type bruteforce`
