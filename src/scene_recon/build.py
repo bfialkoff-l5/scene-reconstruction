@@ -7,7 +7,12 @@ import pandas as pd
 
 from scene_recon.camera import Camera
 from scene_recon.candidates import selected_candidates
-from scene_recon.export import write_build_manifest, write_geo_txt
+from scene_recon.export import (
+    ROTATION_PRIORS_FILENAME,
+    write_build_manifest,
+    write_geo_txt,
+    write_rotation_priors,
+)
 from scene_recon.geometry.footprint import compute_footprints
 from scene_recon.geometry.terrain import TerrainModel
 from scene_recon.intrinsics import write_cameras_json
@@ -165,6 +170,10 @@ def export_run(
 
     extract_frames(record, frame_numbers, images_dir)
     write_geo_txt(selected, odm_input / "geo.txt")
+    # Lossless per-image attitude prior for our patched OpenSfM bundle adjustment (the fix
+    # for the global-rotation-flip CE90 variance). run_odm.sh points the patched
+    # extract_metadata at this file via SCENE_RECON_ROTATION_PRIORS.
+    write_rotation_priors(selected, odm_input / ROTATION_PRIORS_FILENAME)
     cameras_path = odm_input / "cameras.json"
     write_cameras_json(record, cameras_path)
     matcher_neighbors = _write_matcher_profile(

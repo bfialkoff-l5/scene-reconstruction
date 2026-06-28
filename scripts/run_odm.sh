@@ -55,12 +55,13 @@ if [[ ${#ODM_ARGS[@]} -eq 0 ]]; then
   ODM_ARGS=(--fast-orthophoto)
 fi
 
+OPTS_HOST="$(container_to_host_path "$CONTAINER_PROJECT_PATH")/$ODM_DATASET/odm_options.json"
+
 # Auto-scale --matcher-neighbors to hold a fixed matching baseline reach for this
 # selection's frame density (build/prepare-odm wrote the value into odm_options.json).
 # A fixed neighbour count shrinks the baseline as spacing densifies, which silently
 # wrecks triangulation -- pin the reach instead. Skipped if the caller set it explicitly.
 if [[ ! " ${ODM_ARGS[*]} " == *" --matcher-neighbors "* ]]; then
-  OPTS_HOST="$(container_to_host_path "$CONTAINER_PROJECT_PATH")/$ODM_DATASET/odm_options.json"
   MN="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('matcher_neighbors',0))" "$OPTS_HOST" 2>/dev/null || echo 0)"
   if [[ -n "$MN" && "$MN" != "0" ]]; then
     ODM_ARGS+=(--matcher-neighbors "$MN")
@@ -68,6 +69,19 @@ if [[ ! " ${ODM_ARGS[*]} " == *" --matcher-neighbors "* ]]; then
   else
     echo "WARN: no auto matcher-neighbors (odm_options.json missing/0); re-run build to regenerate" >&2
   fi
+fi
+
+# Keep OpenSfM's GPS position-prior weight pinned to the prepared baseline. ODM can preserve
+# stale/loose dop values in opensfm/exif when reusing an input tree, so the patched OpenSfM
+# also receives this as an explicit metadata override.
+GPS_ACCURACY="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('gps_accuracy',''))" "$OPTS_HOST" 2>/dev/null || true)"
+if [[ -n "$GPS_ACCURACY" ]]; then
+  if [[ ! " ${ODM_ARGS[*]} " == *" --gps-accuracy "* ]]; then
+    ODM_ARGS+=(--gps-accuracy "$GPS_ACCURACY")
+  fi
+  echo "gps accuracy: $GPS_ACCURACY m (also exported as SCENE_RECON_GPS_DOP)"
+else
+  echo "WARN: no gps_accuracy in odm_options.json; OpenSfM will use EXIF/ODM defaults" >&2
 fi
 
 # Bind our lab calibration (intrinsicK.csv -> cameras.json). Without a seed ODM defaults
@@ -87,7 +101,25 @@ if [[ "${OPTIMIZE_CAMERAS:-0}" == "1" ]]; then
 else
   CAMERA_ARGS+=(--use-fixed-camera-params)
 fi
-docker compose run --rm odm \
+
+# Hand the patched OpenSfM our exact per-image attitude priors (build wrote
+# rotation_priors.json next to geo.txt). extract_metadata reads this path, sets each
+# image's opk, and bundle adjustment anchors rotation to it -- the fix for the global
+# rotation flip. Only set on the patched image (ODM_IMAGE); stock ODM ignores the env var.
+ENV_ARGS=()
+if [[ -n "${GPS_ACCURACY:-}" ]]; then
+  ENV_ARGS+=(-e "SCENE_RECON_GPS_DOP=$GPS_ACCURACY")
+fi
+PRIORS_CONTAINER="$CONTAINER_PROJECT_PATH/$ODM_DATASET/rotation_priors.json"
+PRIORS_HOST="$(container_to_host_path "$CONTAINER_PROJECT_PATH")/$ODM_DATASET/rotation_priors.json"
+if [[ -f "$PRIORS_HOST" ]]; then
+  ENV_ARGS+=(-e "SCENE_RECON_ROTATION_PRIORS=$PRIORS_CONTAINER")
+  echo "rotation priors: $PRIORS_CONTAINER (BA absolute rotation prior; requires patched ODM_IMAGE)"
+else
+  echo "WARN: no rotation_priors.json (re-run build); BA rotation will be unconstrained" >&2
+fi
+
+docker compose run --rm "${ENV_ARGS[@]}" odm \
   --project-path "$CONTAINER_PROJECT_PATH" \
   "$ODM_DATASET" \
   "${CAMERA_ARGS[@]}" \
