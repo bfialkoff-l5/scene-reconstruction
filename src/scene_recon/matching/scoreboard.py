@@ -160,6 +160,109 @@ def _components_and_fiedler(
     return len(comps), fiedler
 
 
+@dataclass
+class CoverageReport:
+    """How well a *predicted* pair set (e.g. the explicit co-visibility list we would hand
+    OpenSfM) covers the pairs that actually match in a reference run.
+
+    The number that decides whether an explicit-pairs run would *starve* matching is
+    `coverage` = predicted ∩ solid / solid (and especially `coverage_cross`, restricted to
+    cross-track pairs -- along-track coverage is trivially ~1.0). `efficiency` =
+    predicted ∩ solid / predicted is the cost/waste side: low means we would attempt many
+    pairs that do not match, which is tolerable since explicit pairs are cheap.
+    """
+
+    n_predicted: int
+    n_solid: int
+    n_hit: int
+    coverage: float
+    efficiency: float
+    n_predicted_cross: int
+    n_solid_cross: int
+    n_hit_cross: int
+    coverage_cross: float
+    efficiency_cross: float
+    min_inliers: int
+    cross_track_rank_gap: int
+
+    def to_json(self) -> dict:
+        return asdict(self)
+
+    def render(self) -> str:
+        rows = [
+            ("predicted pairs", f"{self.n_predicted}"),
+            ("solid pairs (ref)", f"{self.n_solid}"),
+            ("coverage  (hit/solid)", _fmt(self.coverage)),
+            ("efficiency(hit/pred)", _fmt(self.efficiency)),
+            ("predicted cross-track", f"{self.n_predicted_cross}"),
+            ("solid cross-track", f"{self.n_solid_cross}"),
+            ("coverage  cross-track", _fmt(self.coverage_cross)),
+            ("efficiency cross-track", _fmt(self.efficiency_cross)),
+        ]
+        w = max(len(k) for k, _ in rows)
+        return "\n".join(f"  {k.ljust(w)} : {v}" for k, v in rows)
+
+
+def _predicted_pairs(covis) -> set[tuple[str, str]]:
+    """Predicted pairs as sorted image-name tuples ({frame:06d}.png), matching how the
+    reference solid pairs are keyed."""
+    def key(i: int, j: int) -> tuple[str, str]:
+        ni, nj = f"{i:06d}.png", f"{j:06d}.png"
+        return (ni, nj) if ni < nj else (nj, ni)
+
+    return {key(e.i, e.j) for e in covis.edges}
+
+
+def pair_coverage(
+    covis,
+    matches_dir: str | Path,
+    *,
+    min_inliers: int = 20,
+    cross_track_rank_gap: int = 16,
+) -> CoverageReport:
+    """Coverage of a predicted co-visibility pair set against a reference run's matches.
+
+    `covis` is a CoVisGraph (uses `.edges`); `matches_dir` is a *completed* run's
+    `opensfm/matches` dir (never an in-flight one). Pure set arithmetic on top of the
+    already-extracted solid pairs -- CPU-only, low memory, safe to run in parallel.
+    """
+    pairs, images = _load_solid_pairs(Path(matches_dir), min_inliers)
+    solid = set(pairs.keys())
+    predicted = _predicted_pairs(covis)
+
+    names: set[str] = set(images)
+    for a, b in solid | predicted:
+        names.add(a)
+        names.add(b)
+    rank = _frame_rank(names)
+
+    def is_cross(p: tuple[str, str]) -> bool:
+        return abs(rank[p[0]] - rank[p[1]]) > cross_track_rank_gap
+
+    hit = predicted & solid
+    solid_cross = {p for p in solid if is_cross(p)}
+    pred_cross = {p for p in predicted if is_cross(p)}
+    hit_cross = {p for p in hit if is_cross(p)}
+
+    def ratio(num: int, den: int) -> float:
+        return num / den if den else float("nan")
+
+    return CoverageReport(
+        n_predicted=len(predicted),
+        n_solid=len(solid),
+        n_hit=len(hit),
+        coverage=ratio(len(hit), len(solid)),
+        efficiency=ratio(len(hit), len(predicted)),
+        n_predicted_cross=len(pred_cross),
+        n_solid_cross=len(solid_cross),
+        n_hit_cross=len(hit_cross),
+        coverage_cross=ratio(len(hit_cross), len(solid_cross)),
+        efficiency_cross=ratio(len(hit_cross), len(pred_cross)),
+        min_inliers=min_inliers,
+        cross_track_rank_gap=cross_track_rank_gap,
+    )
+
+
 def _track_len_median(hist: dict[str, int]) -> float:
     lengths = sorted(int(k) for k in hist)
     counts = np.array([hist[str(k)] for k in lengths], dtype=float)

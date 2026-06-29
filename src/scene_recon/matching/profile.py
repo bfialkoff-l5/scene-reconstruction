@@ -122,22 +122,95 @@ class StockKnobsBackend:
         )
 
 
+def _frame_image_name(frame: int) -> str:
+    return f"{frame:06d}.png"
+
+
+def explicit_pairs(graph: CoVisGraph, *, seq_window: int = 2) -> list[tuple[str, str]]:
+    """The image-name pair list to hand OpenSfM: co-visible pairs ∪ a short sequential
+    window.
+
+    The co-visibility edges carry the cross-track / loop-closure links a GPS k-NN drops.
+    The sequential window (consecutive keyframes in capture order, ``±seq_window``) is a
+    cheap guarantee that the along-track backbone is never starved by the overlap/view-angle
+    gate -- those pairs are the ~6% of solid matches the geometric graph alone can miss.
+    Pairs are returned as sorted ``{frame:06d}.png`` tuples, deduplicated.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for e in graph.edges:
+        a, b = _frame_image_name(e.i), _frame_image_name(e.j)
+        pairs.add((a, b) if a < b else (b, a))
+    frames = graph.frames  # sorted ascending == capture order
+    for r in range(len(frames)):
+        for d in range(1, seq_window + 1):
+            if r + d < len(frames):
+                a, b = _frame_image_name(frames[r]), _frame_image_name(frames[r + d])
+                pairs.add((a, b) if a < b else (b, a))
+    return sorted(pairs)
+
+
 class ExplicitPairListBackend:
-    """Q2 deeper-integration stub: match exactly the co-visible pair set by handing
-    OpenSfM a precomputed pair list (captures sparse loop-closure links without paying
-    for all-pairs matching). Not yet implemented."""
+    """Match exactly the co-visible pair set by handing OpenSfM a precomputed pair list.
+
+    Captures the sparse cross-track / loop-closure links without paying for an all-pairs
+    (or a huge GPS-k-NN) match: the predicted set is the co-visibility graph plus a short
+    sequential window. ``apply`` writes ``covis_pairs.json`` next to ``odm_options.json``;
+    the in-container ``covis_pairs_shim`` makes OpenSfM consume it when ``run_odm.sh`` is
+    invoked with ``EXPLICIT_PAIRS=1``. ``matcher_neighbors`` is still written from the stock
+    backend purely as a fallback for a run where the shim is *not* active.
+    """
 
     name = "explicit_pairs"
 
-    def recommend(self, graph: CoVisGraph) -> MatcherProfile:  # pragma: no cover
-        raise NotImplementedError(
-            "ExplicitPairListBackend is a planned Q2 extension; use StockKnobsBackend."
+    def __init__(self, *, seq_window: int = 2) -> None:
+        self.seq_window = seq_window
+        self._stock = StockKnobsBackend()
+
+    def recommend(self, graph: CoVisGraph) -> MatcherProfile:
+        pairs = explicit_pairs(graph, seq_window=self.seq_window)
+        fallback = self._stock.recommend(graph)
+        n_covis = len(graph.edges)
+        return MatcherProfile(
+            gps_neighbors=fallback.gps_neighbors,
+            gps_distance_m=fallback.gps_distance_m,
+            graph_rounds=0,
+            source=self.name,
+            extra={
+                "n_pairs": len(pairs),
+                "n_covis_edges": n_covis,
+                "n_sequential_added": len(pairs) - n_covis,
+                "seq_window": self.seq_window,
+            },
         )
 
-    def apply(self, odm_input: Path, profile: MatcherProfile, graph: CoVisGraph) -> None:  # pragma: no cover
-        raise NotImplementedError(
-            "ExplicitPairListBackend is a planned Q2 extension; use StockKnobsBackend."
+    def write_pairs_file(self, odm_input: Path, graph: CoVisGraph) -> int:
+        """Write just ``covis_pairs.json`` (the explicit pair list the shim consumes) and
+        return the pair count. Does not touch ``odm_options.json`` / the stock audit, so it
+        can be emitted alongside a StockKnobsBackend run as an opt-in artefact."""
+        pairs = explicit_pairs(graph, seq_window=self.seq_window)
+        (odm_input / "covis_pairs.json").write_text(
+            json.dumps(
+                {
+                    "source": self.name,
+                    "seq_window": self.seq_window,
+                    "n_pairs": len(pairs),
+                    "pairs": [list(p) for p in pairs],
+                }
+            )
+            + "\n"
         )
+        return len(pairs)
+
+    def apply(self, odm_input: Path, profile: MatcherProfile, graph: CoVisGraph) -> None:
+        self.write_pairs_file(odm_input, graph)
+
+        opts_path = odm_input / "odm_options.json"
+        opts = json.loads(opts_path.read_text()) if opts_path.is_file() else {}
+        opts["matcher_neighbors"] = profile.gps_neighbors
+        opts_path.write_text(json.dumps(opts, indent=2) + "\n")
+
+        audit = {"profile": profile.to_json(), "covisibility": graph.summary()}
+        (odm_input / "matching_profile.json").write_text(json.dumps(audit, indent=2) + "\n")
 
 
 class SelfMatchBackend:

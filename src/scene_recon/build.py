@@ -63,7 +63,11 @@ def _write_matcher_profile(
     """
     write_odm_options(odm_input, cameras_path=cameras_path, matcher_neighbors=0)
     if footprints:
-        from scene_recon.matching import StockKnobsBackend, covisibility_from_footprints
+        from scene_recon.matching import (
+            ExplicitPairListBackend,
+            StockKnobsBackend,
+            covisibility_from_footprints,
+        )
 
         graph = covisibility_from_footprints(footprints, selected)
         if graph.edges:
@@ -78,6 +82,15 @@ def _write_matcher_profile(
                 len(graph.frames),
                 len(graph.edges),
                 100 * graph.summary()["cross_track_frac"],
+            )
+            # Also emit the explicit co-visibility pair list (covis ∪ sequential). It is
+            # inert unless run_odm.sh is invoked with EXPLICIT_PAIRS=1, which activates the
+            # in-container shim to match exactly these pairs instead of GPS k-NN.
+            n_pairs = ExplicitPairListBackend().write_pairs_file(odm_input, graph)
+            log.info(
+                "explicit covis pairs written: %d (covis %d + sequential window)",
+                n_pairs,
+                len(graph.edges),
             )
             return profile.gps_neighbors
         log.warning("co-visibility graph empty; falling back to fixed-reach neighbours")

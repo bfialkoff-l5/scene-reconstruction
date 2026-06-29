@@ -26,6 +26,12 @@ services:
     gpus: all
     volumes:
       - ${DATA_ROOT}:/data
+      # Explicit co-visibility pair-list shim: auto-loaded via the .pth at interpreter
+      # start, but inert unless run_odm.sh sets COVIS_PAIRS_FILE (EXPLICIT_PAIRS=1). Lets
+      # OpenSfM match exactly our covis∪sequential pairs instead of GPS k-NN. The path is
+      # the image's venv site-packages (python3.12); update it if the ODM image bumps.
+      - ./docker/covis_shim/covis_pairs_shim.py:/code/venv/lib/python3.12/site-packages/covis_pairs_shim.py:ro
+      - ./docker/covis_shim/covis_pairs_shim.pth:/code/venv/lib/python3.12/site-packages/covis_pairs_shim.pth:ro
     environment:
       HOME: /tmp
       TMPDIR: /tmp

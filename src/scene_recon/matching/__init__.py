@@ -23,16 +23,25 @@ from scene_recon.matching.covisibility import (
     covisibility_from_footprints,
 )
 from scene_recon.matching.profile import (
+    ExplicitPairListBackend,
     MatcherProfile,
     ProfileBackend,
     StockKnobsBackend,
+    explicit_pairs,
 )
-from scene_recon.matching.scoreboard import Scoreboard, score_opensfm
+from scene_recon.matching.scoreboard import (
+    CoverageReport,
+    Scoreboard,
+    pair_coverage,
+    score_opensfm,
+)
 from scene_recon.matching.tuner import RecommendOnly, Tuner
 
 __all__ = [
     "CoVisEdge",
     "CoVisGraph",
+    "CoverageReport",
+    "ExplicitPairListBackend",
     "MatcherProfile",
     "ProfileBackend",
     "RecommendOnly",
@@ -41,5 +50,7 @@ __all__ = [
     "Tuner",
     "build_covisibility",
     "covisibility_from_footprints",
+    "explicit_pairs",
+    "pair_coverage",
     "score_opensfm",
 ]

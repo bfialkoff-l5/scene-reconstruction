@@ -55,11 +55,29 @@ if [[ ${#ODM_ARGS[@]} -eq 0 ]]; then
   ODM_ARGS=(--fast-orthophoto)
 fi
 
+# Explicit co-visibility pair list (EXPLICIT_PAIRS=1): hand OpenSfM exactly the
+# covis∪sequential pairs written by build (covis_pairs.json) via the in-container shim,
+# instead of GPS k-NN. This captures cross-track / loop-closure pairs without the cost (or
+# false-match risk) of a huge --matcher-neighbors. Hard-fails if the pair file is missing
+# so we never silently fall back to along-track-only matching.
+ODM_ENV=()
+if [[ "${EXPLICIT_PAIRS:-0}" == "1" ]]; then
+  PAIRS_HOST="$(container_to_host_path "$CONTAINER_PROJECT_PATH")/$ODM_DATASET/covis_pairs.json"
+  if [[ ! -f "$PAIRS_HOST" ]]; then
+    echo "ERROR: EXPLICIT_PAIRS=1 but $PAIRS_HOST is missing; re-run build to emit covis_pairs.json" >&2
+    exit 1
+  fi
+  N_PAIRS="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('n_pairs','?'))" "$PAIRS_HOST" 2>/dev/null || echo '?')"
+  ODM_ENV+=(-e "COVIS_PAIRS_FILE=$CONTAINER_PROJECT_PATH/$ODM_DATASET/covis_pairs.json")
+  echo "EXPLICIT_PAIRS=1: matching $N_PAIRS explicit co-visibility pairs (shim active); skipping --matcher-neighbors"
+fi
+
 # Auto-scale --matcher-neighbors to hold a fixed matching baseline reach for this
 # selection's frame density (build/prepare-odm wrote the value into odm_options.json).
 # A fixed neighbour count shrinks the baseline as spacing densifies, which silently
-# wrecks triangulation -- pin the reach instead. Skipped if the caller set it explicitly.
-if [[ ! " ${ODM_ARGS[*]} " == *" --matcher-neighbors "* ]]; then
+# wrecks triangulation -- pin the reach instead. Skipped if the caller set it explicitly
+# or when explicit pairs drive matching.
+if [[ "${EXPLICIT_PAIRS:-0}" != "1" && ! " ${ODM_ARGS[*]} " == *" --matcher-neighbors "* ]]; then
   OPTS_HOST="$(container_to_host_path "$CONTAINER_PROJECT_PATH")/$ODM_DATASET/odm_options.json"
   MN="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('matcher_neighbors',0))" "$OPTS_HOST" 2>/dev/null || echo 0)"
   if [[ -n "$MN" && "$MN" != "0" ]]; then
@@ -87,7 +105,7 @@ if [[ "${OPTIMIZE_CAMERAS:-0}" == "1" ]]; then
 else
   CAMERA_ARGS+=(--use-fixed-camera-params)
 fi
-docker compose run --rm odm \
+docker compose run --rm "${ODM_ENV[@]}" odm \
   --project-path "$CONTAINER_PROJECT_PATH" \
   "$ODM_DATASET" \
   "${CAMERA_ARGS[@]}" \
