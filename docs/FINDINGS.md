@@ -6,7 +6,36 @@
 
 Data root: `/home/bfialkoff/s3/odm-results/0088_20260122_eitan_1/runs/<TS>`
 Selection used throughout: **475 keyframes**, `--terrain-gpkg /geo/DSM/israelDTM.gpkg --ray-grid 48 27`
-(deterministic — re-selecting produces the identical 474-line `geo.txt`, byte-for-byte).
+(deterministic within a fixed pose source; `_derived_v2` intentionally changes the selection).
+
+---
+
+## 2026-07-29 — `_derived_v2` pose-source migration and first end-to-end A/B
+
+The builder now requires `_derived_v2/gt_AvatarS0093.csv`. Candidate and footprint caches
+are source-keyed (`*_derived_v2`) and content-fingerprinted, so the legacy `_derived`
+caches and every timestamped run remain intact. Both `geo.txt` positions and
+`rotation_priors.json` attitudes are regenerated from v2; `build.json` records the source
+path and SHA-256.
+
+Frozen recipe for both runs: 475 frames, patched rotation prior, fixed lab intrinsics,
+GPS accuracy 0.5, matcher neighbours 64, high features, fast orthophoto.
+
+| pose source | run | GPS CE90 / LE90 | shots | sparse points | reproj | track mean |
+|---|---|---:|---:|---:|---:|---:|
+| legacy `_derived` | `20260729082450` | 3.91 / 2.89 m | 468/475 | 64,654 | 1.456 px | 7.32 |
+| `_derived_v2` | `20260729095659` | **2.58 / 2.30 m** | 470/475 | 66,495 | **1.363 px** | 7.23 |
+
+The selector changed substantially because positions/attitudes changed: only 40/475 frames
+overlap (Jaccard 0.044), while both selections pass health at 475 frames and retain the
+same matcher recommendation (`k=64`). The v2 orthophoto completed successfully at
+`20260729095659/odm_input/odm_orthophoto/odm_orthophoto.tif`.
+
+**Interpretation:** v2 is the stronger first sample on internal SfM metrics, but it is not
+yet an external-accuracy proof: GPS CE90 is measured against whichever pose source drove
+that run, so changing the reference changes the metric. OpenSfM's reported 3D CE90 also
+rose from 7.93 m to 12.88 m. Visually compare both orthophotos against `Eitan.gpkg` and
+repeat v2 before promoting it as the quality winner.
 
 ---
 

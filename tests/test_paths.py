@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from scene_recon.paths import (
+    footprints_manifest_path,
+    footprints_path,
     latest_run,
     list_runs,
     odm_results_dir,
@@ -23,8 +25,19 @@ def test_slug_layout(tmp_path: Path) -> None:
     slug = "0088_test"
     slug_path = slug_dir(tmp_path, slug)
     assert slug_path == odm_results_dir(tmp_path) / slug
-    assert scored_candidates_path(slug_path).name == "candidates_scored.csv"
-    assert scoring_manifest_path(slug_path).name == "scoring.json"
+    assert (
+        scored_candidates_path(slug_path, "derived_v2").name
+        == "candidates_scored_derived_v2.csv"
+    )
+    assert (
+        scoring_manifest_path(slug_path, "derived_v2").name
+        == "scoring_derived_v2.json"
+    )
+    assert footprints_path(slug_path, "derived_v2").name == "footprints_derived_v2.pkl"
+    assert (
+        footprints_manifest_path(slug_path, "derived_v2").name
+        == "footprints_derived_v2.json"
+    )
 
 
 def test_runs_resolution(tmp_path: Path) -> None:

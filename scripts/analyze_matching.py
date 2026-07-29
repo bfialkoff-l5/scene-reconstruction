@@ -74,8 +74,15 @@ def _covisibility_for_run(odm_input: Path, opensfm: Path):
     """
     geo = _load_geo(odm_input / "geo.txt")
     selected = set(geo)
-    # footprints.pkl lives at the slug root: …/<slug>/footprints.pkl (runs/<name>/odm_input).
-    cache = odm_input.parents[2] / "footprints.pkl"
+    slug_root = odm_input.parents[2]
+    build_manifest = odm_input.parent / "build.json"
+    cache = slug_root / "footprints.pkl"  # Legacy-run fallback.
+    if build_manifest.is_file():
+        manifest = json.loads(build_manifest.read_text())
+        pose_source = str(manifest.get("pose_source", ""))
+        if pose_source:
+            cache_key = pose_source.removeprefix("_")
+            cache = slug_root / f"footprints_{cache_key}.pkl"
     if not cache.is_file():
         print(f"  [covis] no footprint cache at {cache}; skipping co-visibility")
         return None

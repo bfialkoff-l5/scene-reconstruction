@@ -10,6 +10,7 @@ import pandas as pd
 
 from scene_recon.geometry.extrinsics import CameraPose
 from scene_recon.record import Record
+from scene_recon.scoring_cache import file_fingerprint
 from scene_recon.video import frame_filename
 
 # Identifies the rotation-prior sidecar to our patched OpenSfM (read via the
@@ -88,6 +89,8 @@ class BuildManifest:
     stream_id: str
     video: str
     poses_path: str
+    pose_source: str
+    poses_sha256: str
     intrinsics: str
     run_ts: str
     run_dir: str
@@ -110,12 +113,15 @@ def write_build_manifest(
     selection_constants: dict,
 ) -> None:
     selected = candidates[candidates["selected"]]
+    poses_fingerprint = file_fingerprint(record.poses_path)
     manifest = BuildManifest(
         record_path=str(record.path),
         slug=record.slug,
         stream_id=record.stream_id,
         video=str(record.video),
         poses_path=str(record.poses_path),
+        pose_source=record.pose_source,
+        poses_sha256=poses_fingerprint["sha256"],
         intrinsics=str(record.intrinsics),
         run_ts=run_ts,
         run_dir=f"runs/{run_ts}",

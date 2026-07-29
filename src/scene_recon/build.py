@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -30,18 +31,27 @@ from scene_recon.selection import (
     select_keyframes,
 )
 from scene_recon.selection.parallax import approx_cell_ground_z, mission_cell_ground_z
-from scene_recon.paths import run_dir, slug_dir, stamp_run_ts
+from scene_recon.paths import (
+    footprints_manifest_path,
+    footprints_path,
+    run_dir,
+    slug_dir,
+    stamp_run_ts,
+)
 from scene_recon.record import Record
 from scene_recon.scoring import QUALITY_WEIGHT_FEATURES, QUALITY_WEIGHT_SHARPNESS
-from scene_recon.scoring_cache import load_or_score_record, load_scored_candidates
+from scene_recon.scoring_cache import (
+    file_fingerprint,
+    load_or_score_record,
+    load_scored_candidates,
+    record_fingerprint,
+    scoring_is_current,
+)
 from scene_recon.selection_health import SelectionFailed, assess_selection
 from scene_recon.selection_report import write_selection_report
 from scene_recon.video import extract_frames
 
 log = logging.getLogger(__name__)
-
-FOOTPRINTS_FILENAME = "footprints.pkl"
-
 
 def _selection_constants(params: SelectionParams) -> dict:
     return {
@@ -110,17 +120,59 @@ def _mission_bbox(candidates: pd.DataFrame) -> tuple[float, float, float, float]
     )
 
 
+def _stat_fingerprint(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "path": str(path),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _footprint_fingerprint(record: Record, params: SelectionParams) -> dict:
+    terrain_path = Path(params.terrain_gpkg) if params.terrain_gpkg is not None else None
+    return {
+        "record": record_fingerprint(record),
+        "intrinsics": file_fingerprint(record.intrinsics),
+        "terrain": _stat_fingerprint(terrain_path) if terrain_path is not None else None,
+        "geometry": {
+            "bin_size_m": params.bin_size_m,
+            "datum_offset_m": params.datum_offset_m,
+            "ray_grid": list(params.ray_grid),
+            "ray_step_m": params.ray_step_m,
+            "max_range_m": params.max_range_m,
+            "min_valid_ray_frac": params.min_valid_ray_frac,
+            "terrain_margin_m": params.terrain_margin_m,
+        },
+    }
+
+
+def _footprint_cache_is_current(
+    cache_path: Path,
+    manifest_path: Path,
+    record: Record,
+    params: SelectionParams,
+) -> bool:
+    if not cache_path.is_file() or not manifest_path.is_file():
+        return False
+    manifest = json.loads(manifest_path.read_text())
+    return manifest.get("fingerprint") == _footprint_fingerprint(record, params)
+
+
 def _load_or_compute_footprints(
     record: Record,
     candidates: pd.DataFrame,
     grid: GroundGrid,
     params: SelectionParams,
     cache_path: Path,
+    manifest_path: Path,
     *,
     reuse: bool,
     terrain: TerrainModel | None = None,
 ):
-    if reuse and cache_path.is_file():
+    if reuse and _footprint_cache_is_current(
+        cache_path, manifest_path, record, params
+    ):
         log.info("loading footprint cache %s", cache_path)
         return load_footprints(cache_path)
 
@@ -149,6 +201,10 @@ def _load_or_compute_footprints(
         min_valid_ray_frac=params.min_valid_ray_frac,
     )
     save_footprints(cache_path, footprints)
+    manifest_path.write_text(
+        json.dumps({"fingerprint": _footprint_fingerprint(record, params)}, indent=2)
+        + "\n"
+    )
     return footprints
 
 
@@ -202,10 +258,16 @@ def build_record(
     slug_path.mkdir(parents=True, exist_ok=True)
 
     selection = params or DEFAULT_SELECTION_PARAMS
+    footprint_cache = footprints_path(slug_path, record.cache_key)
+    footprint_manifest = footprints_manifest_path(slug_path, record.cache_key)
 
     # Fail fast (before the expensive scoring pass) on missing/unreadable inputs.
     will_reuse_footprints = (
-        select_only and not rescore and (slug_path / FOOTPRINTS_FILENAME).is_file()
+        select_only
+        and not rescore
+        and _footprint_cache_is_current(
+            footprint_cache, footprint_manifest, record, selection
+        )
     )
     if not will_reuse_footprints:
         if selection.terrain_gpkg is None:
@@ -217,8 +279,13 @@ def build_record(
             raise ValueError(f"--terrain-gpkg not found: {selection.terrain_gpkg}")
 
     if select_only:
+        if not scoring_is_current(slug_path, record):
+            raise ValueError(
+                f"--select-only cannot use a missing or stale {record.pose_source} "
+                "candidate cache; run build once without --select-only"
+            )
         log.info("record=%s loading scored cache", record.slug)
-        candidates = load_scored_candidates(slug_path)
+        candidates = load_scored_candidates(slug_path, record)
     else:
         log.info("record=%s scoring candidates", record.slug)
         candidates = load_or_score_record(record, slug_path, rescore=rescore)
@@ -245,7 +312,8 @@ def build_record(
         candidates,
         grid,
         selection,
-        slug_path / FOOTPRINTS_FILENAME,
+        footprint_cache,
+        footprint_manifest,
         reuse=select_only and not rescore,
         terrain=terrain,
     )

@@ -17,8 +17,11 @@ MAP="${2:?usage: $0 <slug> <map.gpkg>}"
 BUCKET="s3://line5-localization-evaluation-data-939103584914-eu-north-1-an"
 FLIGHT_PREFIX="Flight logs/Flight 000"        # slug folders live under this prefix in-bucket
 
-echo "==> raw flight -> $DATA_ROOT/raw/$SLUG  (skipping unused AvatarG* stream)"
-aws s3 sync "$BUCKET/$FLIGHT_PREFIX/$SLUG/" "$DATA_ROOT/raw/$SLUG/" --exclude "AvatarG*"
+echo "==> raw flight -> $DATA_ROOT/raw/$SLUG  (skipping only unused AvatarG*.mp4 video)"
+aws s3 sync \
+  "$BUCKET/$FLIGHT_PREFIX/$SLUG/" \
+  "$DATA_ROOT/raw/$SLUG/" \
+  --exclude "AvatarG*.mp4"
 
 echo "==> DTM -> $DATA_ROOT/geo-resources/DSM/israelDTM.gpkg"
 mkdir -p "$DATA_ROOT/geo-resources/DSM"

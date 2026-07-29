@@ -32,7 +32,7 @@ laptop). The builder auto-discovers files inside a slug folder; you only ever pa
 | Reference orthophoto (overlay/QA) | `$DATA_ROOT/geo-resources/orthophoto/Eitan.gpkg` | `s3://line5-localization-evaluation-data-939103584914-eu-north-1-an/Maps/Eitan.gpkg` |
 
 The builder needs only three files from the raw folder: `AvatarS0093.mp4`,
-`intrinsicK.csv`, and `_derived/gt_AvatarS0093.csv` (the `G0000` stream is ignored — it has
+`intrinsicK.csv`, and `_derived_v2/gt_AvatarS0093.csv` (the `G0000` stream is ignored — it has
 no matching `gt_` poses). `geo-resources` is mounted read-only at `/geo` in the builder, so
 the DTM is referenced as `/geo/DSM/israelDTM.gpkg`.
 

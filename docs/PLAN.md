@@ -25,7 +25,7 @@ Every environment uses the same tree under a single `data_root`:
 │   └── {slug}/                         e.g. 0088_20260122_eitan_1
 │       ├── AvatarS0093.mp4             auto-discovered
 │       ├── intrinsicK.csv
-│       └── _derived/
+│       └── _derived_v2/
 │           └── gt_AvatarS0093.csv      auto-discovered (matches mp4 stem)
 │
 └── odm-results/
@@ -45,7 +45,7 @@ Every environment uses the same tree under a single `data_root`:
 /home/bfialkoff/s3/raw/0088_20260122_eitan_1/
     AvatarS0093.mp4
     intrinsicK.csv
-    _derived/gt_AvatarS0093.csv
+    _derived_v2/gt_AvatarS0093.csv
 ```
 
 **Example (S3):** `data_root=s3://my-bucket` → `s3://my-bucket/raw/0088_20260122_eitan_1/`
@@ -71,8 +71,8 @@ Given `{data_root}/raw/{slug}/`, the builder finds:
 
 | File | Rule |
 |------|------|
-| Video | `*.mp4` where `_derived/gt_<stem>.csv` exists |
-| Poses | `_derived/gt_<stem>.csv` matching the chosen mp4 |
+| Video | `*.mp4` where `_derived_v2/gt_<stem>.csv` exists |
+| Poses | `_derived_v2/gt_<stem>.csv` matching the chosen mp4 |
 | Intrinsics | `intrinsicK.csv` at slug root (required) |
 
 If zero or multiple mp4s satisfy the gt-file rule, fail with a clear error listing candidates. In practice the Avatar **S** stream pairs with `gt_AvatarS0093.csv`; a co-located `AvatarG0000.mp4` is ignored because it has no matching gt file.

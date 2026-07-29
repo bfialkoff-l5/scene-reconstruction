@@ -16,12 +16,20 @@ def slug_dir(data_root: Path, slug: str) -> Path:
     return odm_results_dir(data_root) / slug
 
 
-def scored_candidates_path(slug_dir_path: Path) -> Path:
-    return slug_dir_path / "candidates_scored.csv"
+def scored_candidates_path(slug_dir_path: Path, cache_key: str) -> Path:
+    return slug_dir_path / f"candidates_scored_{cache_key}.csv"
 
 
-def scoring_manifest_path(slug_dir_path: Path) -> Path:
-    return slug_dir_path / "scoring.json"
+def scoring_manifest_path(slug_dir_path: Path, cache_key: str) -> Path:
+    return slug_dir_path / f"scoring_{cache_key}.json"
+
+
+def footprints_path(slug_dir_path: Path, cache_key: str) -> Path:
+    return slug_dir_path / f"footprints_{cache_key}.pkl"
+
+
+def footprints_manifest_path(slug_dir_path: Path, cache_key: str) -> Path:
+    return slug_dir_path / f"footprints_{cache_key}.json"
 
 
 def runs_dir(slug_dir_path: Path) -> Path:

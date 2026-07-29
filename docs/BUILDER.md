@@ -24,8 +24,8 @@ Record.from_path(abspath) -> Record
 |-------|--------|
 | `path` | abspath to slug folder |
 | `slug` | `path.name` |
-| `video` | `*.mp4` with matching `_derived/gt_<stem>.csv` |
-| `poses_path` | `_derived/gt_<stem>.csv` |
+| `video` | `*.mp4` with matching `_derived_v2/gt_<stem>.csv` |
+| `poses_path` | `_derived_v2/gt_<stem>.csv` |
 | `intrinsics` | `intrinsicK.csv` |
 | `stream_id` | mp4 stem |
 

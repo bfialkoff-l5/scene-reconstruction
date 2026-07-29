@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+POSES_DIRNAME = "_derived_v2"
+
 
 @dataclass(frozen=True)
 class Record:
@@ -12,6 +14,7 @@ class Record:
     poses_path: Path
     intrinsics: Path
     stream_id: str
+    pose_source: str
 
     @classmethod
     def from_path(cls, abspath: str | Path) -> Record:
@@ -19,9 +22,9 @@ class Record:
         if not path.is_dir():
             raise FileNotFoundError(f"Record path not found: {path}")
 
-        derived = path / "_derived"
+        derived = path / POSES_DIRNAME
         if not derived.is_dir():
-            raise FileNotFoundError(f"Missing _derived/ in {path}")
+            raise FileNotFoundError(f"Missing {POSES_DIRNAME}/ in {path}")
 
         intrinsics = path / "intrinsicK.csv"
         if not intrinsics.is_file():
@@ -35,7 +38,7 @@ class Record:
 
         if not candidates:
             raise FileNotFoundError(
-                f"No mp4 with matching _derived/gt_<stem>.csv in {path}"
+                f"No mp4 with matching {POSES_DIRNAME}/gt_<stem>.csv in {path}"
             )
         if len(candidates) > 1:
             names = ", ".join(v.name for v, _ in candidates)
@@ -51,6 +54,7 @@ class Record:
             poses_path=poses_path,
             intrinsics=intrinsics,
             stream_id=video.stem,
+            pose_source=POSES_DIRNAME,
         )
 
     @property
@@ -60,3 +64,7 @@ class Record:
                 f"Expected record under .../raw/{{slug}}, got parent {self.path.parent.name!r}"
             )
         return self.path.parent.parent
+
+    @property
+    def cache_key(self) -> str:
+        return self.pose_source.removeprefix("_")

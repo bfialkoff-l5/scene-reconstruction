@@ -15,7 +15,7 @@ from scene_recon.selection import (
     params_from_constants,
     select_keyframes,
 )
-from scene_recon.paths import resolve_run, slug_dir
+from scene_recon.paths import footprints_path, resolve_run, slug_dir
 from scene_recon.record import Record
 from scene_recon.scoring_cache import load_scored_candidates
 from scene_recon.selection_health import assess_selection
@@ -291,18 +291,17 @@ def report_cmd(
     constants = manifest["selection_constants"]
     params = params_from_constants(constants)
 
-    from scene_recon.build import FOOTPRINTS_FILENAME
     from scene_recon.selection import GroundGrid, load_footprints
 
-    footprints_path = slug_path / FOOTPRINTS_FILENAME
-    if not footprints_path.is_file():
+    cached_footprints = footprints_path(slug_path, record.cache_key)
+    if not cached_footprints.is_file():
         raise click.ClickException(
-            f"missing {footprints_path}; re-run build to regenerate the footprint cache"
+            f"missing {cached_footprints}; re-run build to regenerate the footprint cache"
         )
-    footprints = load_footprints(footprints_path)
+    footprints = load_footprints(cached_footprints)
 
     if force:
-        candidates = load_scored_candidates(slug_path)
+        candidates = load_scored_candidates(slug_path, record)
         grid = GroundGrid.from_poses(
             candidates, bin_size_m=params.bin_size_m, margin_m=params.terrain_margin_m
         )
